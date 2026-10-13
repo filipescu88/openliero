@@ -21,6 +21,7 @@
 #include "net/relayLink.hpp"
 #include "net/session.hpp"
 #include "net/transport.hpp"
+#include "webPage.hpp"
 
 namespace {
 
@@ -260,6 +261,19 @@ TEST_CASE("RelayClient reports relay errors", "[relay]") {
 TEST_CASE("Native builds have no browser relay socket", "[relay]") {
   CHECK(OpenBrowserRelaySocket("ws://localhost/ws") == nullptr);
   CHECK(DefaultRelayUrl().empty());
+}
+
+TEST_CASE("Invite links accept only relay room codes", "[relay]") {
+  CHECK(web_page::IsRoomCode("AB12CD"));
+  CHECK(web_page::IsRoomCode("Z9Z9Z9"));
+  CHECK_FALSE(web_page::IsRoomCode("ab12cd"));   // normalized to upper case before this
+  CHECK_FALSE(web_page::IsRoomCode("AB12C"));    // too short
+  CHECK_FALSE(web_page::IsRoomCode("AB12CDE"));  // too long
+  CHECK_FALSE(web_page::IsRoomCode("AB'+1D"));   // pasted into page script: no quotes
+  // Native builds have no page to read from or share to.
+  CHECK(web_page::TakeJoinCodeFromUrl().empty());
+  CHECK(web_page::InviteLink("AB12CD").empty());
+  CHECK_FALSE(web_page::ShareInvite("AB12CD"));
 }
 
 TEST_CASE("NetTransport carries game packets over the relay", "[relay]") {

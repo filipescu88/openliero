@@ -13,6 +13,7 @@
 #include "rand.hpp"
 #include "text.hpp"
 #include "weaponMenuState.hpp"
+#include "webPage.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -252,6 +253,15 @@ bool MainMenuState::Update() {
 
         case MainMenu::kMaJoinOnline: {
           g_sound_player->Play(common.sound_hook[SoundMenuSelect]);
+#if OPENLIERO_EMSCRIPTEN
+          // The browser's own dialog brings up the phone keyboard, which the
+          // in-game text field cannot.
+          if (std::string code = web_page::AskRoomCode(); !code.empty()) {
+            gfx->pending_net_address = std::move(code);
+            gfx->pending_menu_selection = MainMenu::kMaJoinOnline;
+          }
+          break;
+#endif
           gfx->state_stack.Push(std::make_unique<InputStringState>(
                                     "", 6, 10, 80, ::toupper, "ROOM CODE: ", false,
                                     [this](bool accepted, std::string const& result) {
