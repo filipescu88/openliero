@@ -208,6 +208,7 @@ set(SOURCES
 set(GAME_SOURCES ${SOURCES}
   src/game/gfx.cpp
   src/game/keys.cpp
+  src/game/touch/touchControls.cpp
   src/game/gameEntry.cpp
   src/game/mainMenuState.cpp
   src/game/fileSelectorState.cpp

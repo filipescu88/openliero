@@ -278,6 +278,15 @@ void Gfx::Init() {
   SDL_HideCursor();
   last_frame = SDL_GetTicks();
 
+  // Nakładka dotykowa: na telefonie (Emscripten) włączona od startu, na desktopie
+  // dopiero po pierwszym dotknięciu ekranu. Wymuszenie/wyłączenie: OPENLIERO_TOUCH=1|0.
+#if defined(__EMSCRIPTEN__)
+  touch.SetEnabled(true);
+#endif
+  if (char const* kTouchEnv = SDL_getenv("OPENLIERO_TOUCH")) {
+    touch.SetEnabled(SDL_strcmp(kTouchEnv, "0") != 0);
+  }
+
   play_renderer.Init(320, 200);
   single_screen_renderer.Init(640, 400);
   // Gamepad init
@@ -294,6 +303,52 @@ void Gfx::Init() {
 }
 
 void Gfx::SetVideoMode() {
+#if OPENLIERO_EMSCRIPTEN
+  // Telefon: kanwa zostaje w rozdzielczości gry (640×400), a CSS skaluje ją do
+  // największego prostokąta 16:10 mieszczącego się na ekranie (z zachowaniem
+  // proporcji — bez rozciągania!). Dzięki temu współrzędne dotyku znormalizowane
+  // przez SDL do rozmiaru kanwy pokrywają się z układem nakładki w przestrzeni gry.
+  // Uwaga: zmiana orientacji w trakcie działania wymaga odświeżenia strony (v1).
+  EM_ASM({
+    const canvas = document.querySelector('#canvas');
+    if (!canvas) {
+      return;
+    }
+    // Rozdzielczość gry (kanwa w pikselach urządzenia) — trzymamy ją na sztywno,
+    // żeby SDL nie rozciągnął klatki 640×400 do kształtu okna. CSS skaluje kanwę
+    // do największego prostokąta 16:10 mieszczącego się na ekranie.
+    const GAME_W = 640;
+    const GAME_H = 400;
+    const fit = () => {
+      if (canvas.width !== GAME_W) {
+        canvas.width = GAME_W;
+      }
+      if (canvas.height !== GAME_H) {
+        canvas.height = GAME_H;
+      }
+      const ratio = GAME_W / GAME_H;
+      let w = window.innerWidth;
+      let h = window.innerHeight;
+      if (w / h > ratio) {
+        w = h * ratio;
+      } else {
+        h = w / ratio;
+      }
+      canvas.style.position = 'absolute';
+      canvas.style.width = `${w}px`;
+      canvas.style.height = `${h}px`;
+      canvas.style.left = `${(window.innerWidth - w) / 2}px`;
+      canvas.style.top = `${(window.innerHeight - h) / 2}px`;
+      canvas.style.imageRendering = 'pixelated';
+      canvas.style.touchAction = 'none';
+    };
+    fit();
+    window.addEventListener('resize', fit);
+    window.addEventListener('orientationchange', fit);
+    // SDL sam potrafi zmienić rozmiar kanwy pod okno — pilnujemy swoich 640×400.
+    setInterval(fit, 1000);
+  });
+#endif
   if (sdl_spectator_renderer) {
     SDL_DestroyRenderer(sdl_spectator_renderer);
     sdl_spectator_renderer = nullptr;
@@ -1016,11 +1071,17 @@ void Gfx::Draw(SDL_Surface& surface, SDL_Texture& texture, SDL_Renderer& sdl_ren
   Rect const kNewRect(offset_x, offset_y, renderer.render_res_x * kMag,
                       renderer.render_res_y * kMag);
 
-  if (kMag != prev_mag) {
-    // Clear background if magnification is decreased to
-    // avoid leftovers.
+  bool const kMainWindow = (&texture == sdl_texture) && (sdl_texture != nullptr);
+  bool const kDrawTouch = kMainWindow && touch.Visible();
+
+  if ((kMag != prev_mag) || kDrawTouch) {
+    // Clear background if magnification is decreased to avoid leftovers.
+    // Czyścimy też całą powierzchnię, gdy rysujemy nakładkę dotykową: strefy
+    // sterowania leżą poza obszarem gry (na czarnych pasach letterboxu), a te
+    // piksele nie są nadpisywane przez ScaleDraw — bez czyszczenia zostawałyby
+    // ślady nakładki z poprzedniej rozdzielczości/klatki.
     SDL_FillSurfaceRect(&surface, nullptr, 0);
-    update_rect = last_update_rect | kNewRect;
+    update_rect = (kMag != prev_mag) ? (last_update_rect | kNewRect) : kNewRect;
   } else {
     update_rect = kNewRect;
   }
@@ -1036,6 +1097,12 @@ void Gfx::Draw(SDL_Surface& surface, SDL_Texture& texture, SDL_Renderer& sdl_ren
 
   ScaleDraw(renderer.bmp.pixels, renderer.render_res_x, renderer.render_res_y, kSrcPitch, dest,
             kDestPitch, kMag, renderer.fade_value);
+
+  // Nakładka sterowania dotykowego — tylko główne okno i tylko gdy dotyk aktywny.
+  // Rysujemy na powierzchni okna (na wierzchu klatki gry), przed uploadem tekstury.
+  if ((&texture == sdl_texture) && (sdl_texture != nullptr) && touch.Visible()) {
+    touch.DrawOverlay(surface, *this);
+  }
 
   SDL_UpdateTexture(&texture, nullptr, surface.pixels, surface.w * 4);
   SDL_RenderClear(&sdl_renderer);
@@ -1481,12 +1548,31 @@ bool Gfx::RunOneFrame() {
         (ev.key.mod & SDL_KMOD_ALT)) {
       return false;
     }
+
+    // Dotyk obsługujemy centralnie (nie w ProcessEvent), żeby nakładka widziała
+    // wszystkie zdarzenia niezależnie od tego, który stan gry jest na wierzchu.
+    // SDL3 dla Emscripten emituje SDL_EVENT_FINGER_* dla DOM-owego pointerType "touch".
+    if ((ev.type == SDL_EVENT_FINGER_DOWN) || (ev.type == SDL_EVENT_FINGER_MOTION) ||
+        (ev.type == SDL_EVENT_FINGER_UP) || (ev.type == SDL_EVENT_FINGER_CANCELED)) {
+      if (!touch.Enabled() && (ev.type == SDL_EVENT_FINGER_DOWN)) {
+        touch.SetEnabled(true);  // np. desktop z panelem dotykowym: pierwszy dotyk włącza nakładkę
+      }
+      touch.HandleEvent(ev, *this);
+    }
+
     state_stack.HandleEvent(ev);
   }
 
   // Capture menu selection before update() might pop and destroy the state
   int const kMenuSelection = menuStatePtr_ ? menuStatePtr_->Selection() : -1;
   bool const kMenuFadingOut = menuStatePtr_ && menuStatePtr_->IsFadingOut();
+
+  // Dotyk → klawisze DOS. Robimy to po odebraniu zdarzeń, a przed aktualizacją
+  // stanu gry, żeby nakładka działała jak klawiatura (TestKey/TestKeyOnce).
+  if (!touch.Enabled() && touch.HadFinger()) {
+    touch.SetEnabled(true);  // np. desktop z ekranem dotykowym: pierwszy dotyk włącza nakładkę
+  }
+  touch.Apply(*this);
 
   if (!state_stack.Update()) {
     // Top state popped. Determine what to do next.

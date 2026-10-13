@@ -22,6 +22,7 @@
 #include "rand.hpp"
 #include "settings.hpp"
 #include "state.hpp"
+#include "touch/touchControls.hpp"
 
 struct Key {
   Key(int sym, char ch) : sym(sym), ch(ch) {}
@@ -383,7 +384,11 @@ struct Gfx {
   // Error message to display after GamePlayState pops (set by controllers)
   std::string pending_error_message;
 
-  std::vector<Joystick> joysticks;
+  std::vector<Joystick> joysticks{};
+
+  // Sterowanie dotykowe (nakładka wariantu C). Wciska te same klawisze DOS,
+  // które gracz ma przypisane do akcji — patrz touch/touchControls.hpp.
+  TouchControls touch;
 
   SDL_Scancode key_buf[32], *key_buf_ptr;
 

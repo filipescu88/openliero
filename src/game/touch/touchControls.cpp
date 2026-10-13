@@ -1,0 +1,499 @@
+// Sterowanie dotykowe — implementacja. Patrz touchControls.hpp po opis układu
+// i zasadę „dotyk wciska te same klawisze DOS, co klawiatura”.
+
+#include "touch/touchControls.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <string>
+#include <utility>
+
+#include "controller/controller.hpp"
+#include "game.hpp"
+#include "gfx.hpp"
+#include "settings.hpp"
+#include "worm.hpp"
+
+namespace {
+
+// Kolory nakładki (ARGB, niezależne od palety gry) — spójne z makietą F3.
+constexpr uint32_t kZoneFill = 0x18FFFFFF;
+constexpr uint32_t kZoneRing = 0x70FFFFFF;
+constexpr uint32_t kZoneRingHot = 0xC0FFD166;
+constexpr uint32_t kKnob = 0xCCFFC64D;
+constexpr uint32_t kBtnFire = 0x77E5484D;
+constexpr uint32_t kBtnJump = 0x7756D364;
+constexpr uint32_t kBtnRope = 0x77FFB300;
+constexpr uint32_t kBtnChange = 0x775B8DEF;
+
+constexpr float kStickDead = 0.15F;   // martwa strefa drążka (15% — jak w makiecie)
+constexpr float kAutoFire = 0.55F;    // wychylenie prawego drążka = auto-ogień
+constexpr float kTurnThresh = 0.60F;  // wychylenie X prawego drążka = obrót
+constexpr float kStickZoneScale = 1.25F;  // strefa chwytu drążka (× promień)
+
+inline void BlendPixel(SDL_Surface& s, int x, int y, uint32_t argb, float a) {
+  if (x < 0 || y < 0 || x >= s.w || y >= s.h || a <= 0.0F) {
+    return;
+  }
+  uint32_t* const kRow = static_cast<uint32_t*>(s.pixels) + (static_cast<std::size_t>(y) * (s.pitch / 4U));
+  uint32_t const kSrc = argb;
+  uint32_t const kDst = kRow[x];
+  auto const kMix = [&](int shift) {
+    float const kS = static_cast<float>((kSrc >> shift) & 0xFFU) / 255.0F;
+    float const kD = static_cast<float>((kDst >> shift) & 0xFFU) / 255.0F;
+    return static_cast<uint32_t>(std::lround((kS * a + kD * (1.0F - a)) * 255.0F)) & 0xFFU;
+  };
+  kRow[x] = 0xFF000000U | (kMix(16) << 16) | (kMix(8) << 8) | kMix(0);
+}
+
+void DrawDisc(SDL_Surface& s, float cx, float cy, float r, uint32_t fill, float fill_a,
+              uint32_t ring, float ring_a) {
+  int const kX0 = static_cast<int>(std::floor(cx - r));
+  int const kX1 = static_cast<int>(std::ceil(cx + r));
+  int const kY0 = static_cast<int>(std::floor(cy - r));
+  int const kY1 = static_cast<int>(std::ceil(cy + r));
+  float const kRingW = std::max(1.5F, r * 0.09F);
+  // Krycie bierzemy z kanału alfa koloru; parametr `*_a` to dodatkowy mnożnik
+  // (np. 0.6 gdy przycisk jest wciśnięty). Bez tego półprzezroczyste kolory
+  // nakładki malowałyby się na biało.
+  float const kFillA = fill_a * (static_cast<float>((fill >> 24) & 0xFFU) / 255.0F);
+  float const kRingA = ring_a * (static_cast<float>((ring >> 24) & 0xFFU) / 255.0F);
+  for (int y = kY0; y <= kY1; ++y) {
+    for (int x = kX0; x <= kX1; ++x) {
+      float const kDx = (static_cast<float>(x) + 0.5F) - cx;
+      float const kDy = (static_cast<float>(y) + 0.5F) - cy;
+      float const kDist = std::sqrt(kDx * kDx + kDy * kDy);
+      if (kDist > r) {
+        continue;
+      }
+      if (kDist > r - kRingW) {
+        BlendPixel(s, x, y, ring, kRingA);
+      } else {
+        BlendPixel(s, x, y, fill, kFillA);
+      }
+    }
+  }
+}
+
+inline bool InDisc(float px, float py, float cx, float cy, float r) {
+  float const kDx = px - cx;
+  float const kDy = py - cy;
+  return (kDx * kDx + kDy * kDy) <= r * r;
+}
+
+inline float ClampUnit(float v) { return std::clamp(v, -1.0F, 1.0F); }
+
+}  // namespace
+
+void TouchControls::RecomputeLayout(Gfx& gfx) {
+  int w = gfx.window_w;
+  int h = gfx.window_h;
+  if ((gfx.sdl_draw_surface != nullptr) && gfx.sdl_draw_surface->w > 0 &&
+      (gfx.sdl_draw_surface->h > 0)) {
+    w = gfx.sdl_draw_surface->w;
+    h = gfx.sdl_draw_surface->h;
+  }
+  if (w <= 0 || h <= 0) {
+    return;
+  }
+  if (layout_valid_ && layout_w_ == w && layout_h_ == h) {
+    return;
+  }
+  layout_w_ = w;
+  layout_h_ = h;
+  layout_valid_ = true;
+  std::fprintf(stderr, "[touch] layout %dx%d\n", w, h);
+
+  float const kMin = static_cast<float>(std::min(w, h));
+  float const kMargin = std::max(6.0F, kMin * 0.03F);
+  float const kStickR = std::clamp(kMin * 0.20F, 34.0F, 110.0F);
+  float const kBtnR = std::clamp(kMin * 0.105F, 18.0F, 64.0F);
+  float const kGap = kBtnR * 0.55F;
+
+  // Lewy drążek: ruch + celowanie (odpowiednik strzałek).
+  sticks_[0].base_x = kMargin + kStickR;
+  sticks_[0].base_y = static_cast<float>(h) - kMargin - kStickR;
+  // Prawy drążek: celowanie + auto-ogień — na lewo od kolumny przycisków.
+  sticks_[1].base_x = static_cast<float>(w) - kMargin - (kBtnR * 2.0F) - kGap - kStickR;
+  sticks_[1].base_y = static_cast<float>(h) - kMargin - kStickR;
+
+  // Kolumna przycisków przy prawej krawędzi: OGIEN (dół) → SKOK → LINA → BRON.
+  float const kColX = static_cast<float>(w) - kMargin - kBtnR;
+  float y = static_cast<float>(h) - kMargin - kBtnR;
+  buttons_[kBtnFire] = {kColX, y, kBtnR, false, 0};
+  y -= (kBtnR * 2.0F) + kGap;
+  buttons_[kBtnJump] = {kColX, y, kBtnR * 0.85F, false, 0};
+  y -= (kBtnR * 1.7F) + kGap;
+  buttons_[kBtnRope] = {kColX, y, kBtnR * 0.80F, false, 0};
+  y -= (kBtnR * 1.6F) + kGap;
+  buttons_[kBtnChange] = {kColX, y, kBtnR * 0.80F, false, 0};
+}
+
+void TouchControls::SimulateFinger(SDL_FingerID id, bool down, float nx, float ny, Gfx& gfx) {
+  SDL_Event ev{};
+  ev.type = down ? SDL_EVENT_FINGER_DOWN : SDL_EVENT_FINGER_UP;
+  ev.tfinger.fingerID = id;
+  ev.tfinger.x = nx;
+  ev.tfinger.y = ny;
+  HandleEvent(ev, gfx);
+}
+
+void TouchControls::HandleEvent(SDL_Event const& ev, Gfx& gfx) {
+  switch (ev.type) {
+    case SDL_EVENT_FINGER_DOWN:
+    case SDL_EVENT_FINGER_MOTION:
+    case SDL_EVENT_FINGER_UP:
+    case SDL_EVENT_FINGER_CANCELED:
+      break;
+    default:
+      return;
+  }
+  had_finger_ = true;
+  if (!enabled_) {
+    return;
+  }
+  RecomputeLayout(gfx);
+  if (layout_w_ <= 0 || layout_h_ <= 0) {
+    return;
+  }
+
+  // SDL podaje pozycję dotyku znormalizowaną (0..1) względem okna.
+  float const kX = ev.tfinger.x * static_cast<float>(layout_w_);
+  float const kY = ev.tfinger.y * static_cast<float>(layout_h_);
+  SDL_FingerID const kId = ev.tfinger.fingerID;
+
+  if (ev.type == SDL_EVENT_FINGER_DOWN) {
+    // 1) przyciski — tolerancja 1.25× promienia (palec jest większy niż kropka)
+    int best = -1;
+    float best_r = 1e9F;
+    for (int i = 0; i < kBtnCount; ++i) {
+      Button const& b = buttons_[i];
+      if (InDisc(kX, kY, b.x, b.y, b.r * 1.25F) && b.r < best_r) {
+        best = i;
+        best_r = b.r;
+      }
+    }
+    if (best >= 0) {
+      buttons_[best].down = true;
+      buttons_[best].finger = kId;
+      return;
+    }
+
+    // 2) drążki — „chwyt” w promieniu strefy, środek drążka = miejsce dotknięcia
+    float const kStickR = std::clamp(static_cast<float>(std::min(layout_w_, layout_h_)) * 0.20F, 34.0F,
+                                     110.0F);
+    for (int i = 0; i < 2; ++i) {
+      Stick& s = sticks_[i];
+      if (!s.active && InDisc(kX, kY, s.base_x, s.base_y, kStickR * kStickZoneScale)) {
+        s.active = true;
+        s.finger = kId;
+        s.base_x = kX;
+        s.base_y = kY;
+        s.x = kX;
+        s.y = kY;
+        return;
+      }
+    }
+
+    // 3) poza strefami → potencjalne tapnięcie (potwierdzenie)
+    tap_pending_ = true;
+    tap_finger_ = kId;
+    tap_x_ = kX;
+    tap_y_ = kY;
+    tap_frames_ = 0;
+    return;
+  }
+
+  bool const kReleased = (ev.type != SDL_EVENT_FINGER_MOTION);
+  for (Stick& s : sticks_) {
+    if (s.active && s.finger == kId) {
+      s.x = kX;
+      s.y = kY;
+      if (kReleased) {
+        s.active = false;
+        s.finger = 0;
+        nudge_.at(static_cast<std::size_t>(&s - sticks_.data())).at(0) = 0;
+        nudge_.at(static_cast<std::size_t>(&s - sticks_.data())).at(1) = 0;
+      }
+      return;
+    }
+  }
+  for (Button& b : buttons_) {
+    if (b.down && b.finger == kId) {
+      if (kReleased) {
+        b.down = false;
+        b.finger = 0;
+      }
+      return;
+    }
+  }
+  if (tap_pending_ && (tap_finger_ == kId)) {
+    if (ev.type == SDL_EVENT_FINGER_MOTION) {
+      ++tap_frames_;
+      float const kDx = kX - tap_x_;
+      float const kDy = kY - tap_y_;
+      float const kLimit =
+          static_cast<float>(std::min(layout_w_, layout_h_)) * 0.07F;  // ruch = gest, nie tap
+      if (std::sqrt(kDx * kDx + kDy * kDy) > kLimit) {
+        tap_pending_ = false;
+      }
+    } else {
+      // Krótki dotyk bez ruchu poza strefami = potwierdzenie. Menu i ekran broni
+      // reagują na ENTER **oraz** na klawisz ognia gracza (TestControlOnce(kFire)) —
+      // dlatego pulsujemy oba, żeby dało się potwierdzać palcem w każdym ekranie.
+      if (ev.type == SDL_EVENT_FINGER_UP && tap_frames_ <= 30) {
+        PulseKey(gfx, SDLToDOSKey(SDL_SCANCODE_RETURN), 2);
+        PulseKey(gfx, ActionKeyCode(gfx, WormSettings::kFire), 2);
+      }
+      tap_pending_ = false;
+    }
+  }
+}
+
+void TouchControls::PulseKey(Gfx& gfx, uint32_t code, int frames) {
+  if (code == 0 || code >= kMaxDosKey) {
+    return;
+  }
+  std::fprintf(stderr, "[touch] pulse key=%u frames=%d\n", code, frames);
+  pulse_frames_[code] = std::max(pulse_frames_[code], frames);
+  // Klawiatura w ProcessEvent woła też controller->OnKey — ekran wyboru broni i
+  // inne stany sterowane kontrolerem (nie samym gfx.dos_keys) potrzebują tego
+  // samego powiadomienia, inaczej dotyk nie ruszy ich wcale.
+  if (gfx.controller) {
+    gfx.controller->OnKey(code, /*state=*/true);
+  }
+}
+
+uint32_t TouchControls::ActionKeyCode(Gfx& gfx, int control) const {
+  if (gfx.settings == nullptr) {
+    return 0;
+  }
+  auto const& kWs = gfx.settings->worm_settings[0];
+  if (kWs == nullptr) {
+    return 0;
+  }
+  return Settings::kExtensions ? kWs->controls_ex[control] : kWs->controls[control];
+}
+
+void TouchControls::SetActionKey(Gfx& gfx, int control, bool down) {
+  uint32_t const kCode = ActionKeyCode(gfx, control);
+  if (kCode == 0) {
+    return;
+  }
+  if (kCode < kMaxDosKey) {
+    if (down) {
+      if (!gfx.dos_keys[kCode]) {
+        std::fprintf(stderr, "[touch] control=%d key=%u DOWN\n", control, kCode);
+      }
+      gfx.dos_keys[kCode] = true;
+      owned_dos_[kCode] = true;
+      wanted_dos_[kCode] = true;
+      if (gfx.controller) {
+        gfx.controller->OnKey(kCode, /*state=*/true);
+      }
+    } else if (owned_dos_[kCode] && (pulse_frames_[kCode] == 0)) {
+      std::fprintf(stderr, "[touch] control=%d key=%u up\n", control, kCode);
+      gfx.dos_keys[kCode] = false;
+      owned_dos_[kCode] = false;
+      if (gfx.controller) {
+        gfx.controller->OnKey(kCode, /*state=*/false);
+      }
+    }
+  } else if (down) {
+    std::fprintf(stderr, "[touch] control=%d exkey=%u DOWN\n", control, kCode);
+    gfx.ex_keys[kCode] = true;
+    owned_ex_.insert(kCode);
+    wanted_ex_.insert(kCode);
+  } else if (owned_ex_.erase(kCode) > 0U) {
+    gfx.ex_keys[kCode] = false;
+  }
+}
+
+bool TouchControls::KeyHeldByTouch(uint32_t code) const {
+  if (code >= kMaxDosKey) {
+    return owned_ex_.count(code) > 0U;
+  }
+  return owned_dos_[code];
+}
+
+void TouchControls::Apply(Gfx& gfx) {
+  if (!enabled_) {
+    return;
+  }
+  RecomputeLayout(gfx);
+  if (layout_w_ <= 0 || layout_h_ <= 0) {
+    return;
+  }
+
+  // 1) impulsy (tap = ENTER+kFire, impulsy kierunkowe dla menu)
+  for (uint32_t k = 0; k < kMaxDosKey; ++k) {
+    if (pulse_frames_[k] > 0) {
+      gfx.dos_keys[k] = true;
+      owned_dos_[k] = true;
+      if (--pulse_frames_[k] == 0) {
+        // koniec impulsu: zgłoś zwolnienie kontrolerowi (klawisz zostanie zdjęty w kroku 4)
+        if (gfx.controller) {
+          gfx.controller->OnKey(k, /*state=*/false);
+        }
+      }
+    }
+  }
+
+  // 2) drążki → kierunki (ruch + celowanie) i auto-ogień
+  float const kStickR =
+      std::clamp(static_cast<float>(std::min(layout_w_, layout_h_)) * 0.20F, 34.0F, 110.0F);
+  auto const kAxis = [&](Stick const& s) {
+    return std::pair<float, float>{ClampUnit((s.x - s.base_x) / kStickR),
+                                   ClampUnit((s.y - s.base_y) / kStickR)};
+  };
+  Stick const& kMove = sticks_[0];
+  Stick const& kAim = sticks_[1];
+  auto const kMoveAx = kAxis(kMove);
+  auto const kAimAx = kAxis(kAim);
+
+  bool left = false;
+  bool right = false;
+  bool up = false;
+  bool down = false;
+  if (kMove.active) {
+    if (kMoveAx.first < -kStickDead) { left = true; }
+    if (kMoveAx.first > kStickDead) { right = true; }
+    if (kMoveAx.second < -kStickDead) { up = true; }
+    if (kMoveAx.second > kStickDead) { down = true; }
+  }
+  if (kAim.active) {
+    if (kAimAx.second < -kStickDead) { up = true; }
+    if (kAimAx.second > kStickDead) { down = true; }
+    if (kAimAx.first < -kTurnThresh) { left = true; }
+    if (kAimAx.first > kTurnThresh) { right = true; }
+  }
+  bool const kAutoFire =
+      kAim.active && ((std::fabs(kAimAx.first) > kAutoFire) || (std::fabs(kAimAx.second) > kAutoFire));
+
+  SetActionKey(gfx, WormSettings::kLeft, left);
+  SetActionKey(gfx, WormSettings::kRight, right);
+  SetActionKey(gfx, WormSettings::kUp, up);
+  SetActionKey(gfx, WormSettings::kDown, down);
+  SetActionKey(gfx, WormSettings::kFire, buttons_[kBtnFire].down || kAutoFire);
+  SetActionKey(gfx, WormSettings::kJump, buttons_[kBtnJump].down);
+  SetActionKey(gfx, WormSettings::kDig, buttons_[kBtnRope].down);
+  SetActionKey(gfx, WormSettings::kChange, buttons_[kBtnChange].down);
+
+  // 3) impulsy kierunkowe: jedno wychylenie drążka = jedno naciśnięcie strzałki
+  //    (menu i ekran broni używają TestSdlKeyOnce), reset po powrocie do martwej strefy.
+  if (kMove.active) {
+    for (int axis = 0; axis < 2; ++axis) {
+      float const kV = (axis == 0) ? kMoveAx.first : kMoveAx.second;
+      int& nudge = nudge_[0].at(static_cast<std::size_t>(axis));
+      if (std::fabs(kV) > (kStickDead * 1.4F)) {
+        if (nudge == 0) {
+          SDL_Scancode sc = SDL_SCANCODE_RETURN;
+          if (axis == 0) {
+            sc = (kV < 0.0F) ? SDL_SCANCODE_LEFT : SDL_SCANCODE_RIGHT;
+          } else {
+            sc = (kV < 0.0F) ? SDL_SCANCODE_UP : SDL_SCANCODE_DOWN;
+          }
+          PulseKey(gfx, SDLToDOSKey(sc), 3);
+          nudge = (kV < 0.0F) ? -1 : 1;
+        }
+      } else if (std::fabs(kV) < kStickDead) {
+        nudge = 0;
+      }
+    }
+  }
+
+  // 4) zwolnij to, co nakładka trzymała, a czego już nie chce (pulsy i „chciane” zostają)
+  for (uint32_t k = 0; k < kMaxDosKey; ++k) {
+    if (owned_dos_[k] && !wanted_dos_[k] && (pulse_frames_[k] == 0)) {
+      gfx.dos_keys[k] = false;
+      owned_dos_[k] = false;
+    }
+    wanted_dos_[k] = false;  // na następną klatkę liczymy od zera
+  }
+  for (auto it = owned_ex_.begin(); it != owned_ex_.end();) {
+    if (wanted_ex_.count(*it) == 0U) {
+      gfx.ex_keys[*it] = false;
+      it = owned_ex_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  wanted_ex_.clear();
+}
+
+void TouchControls::DrawLabel(SDL_Surface& surface, Gfx& gfx, std::string const& text, float cx,
+                              float cy) {
+  if (gfx.common == nullptr) {
+    return;
+  }
+  int height = 0;
+  int const kW = gfx.common->font.GetDims(text, &height);
+  if (kW <= 0 || height <= 0) {
+    return;
+  }
+  Bitmap scratch;
+  scratch.Alloc(kW, height);
+  scratch.pal32 = gfx.play_renderer.pal32;  // te same kolory co w grze
+  std::fill_n(scratch.pixels, static_cast<std::size_t>(scratch.pitch) * scratch.h, 0U);
+  // 7 = biały w palecie gry; tekst bez cienia, żeby zmieścił się w przycisku
+  gfx.common->font.DrawString(scratch, text, 0, 0, 7);
+
+  int const kX0 = static_cast<int>(std::lround(cx - (static_cast<float>(kW) / 2.0F)));
+  int const kY0 = static_cast<int>(std::lround(cy - (static_cast<float>(height) / 2.0F)));
+  for (int y = 0; y < height; ++y) {
+    for (int x = 0; x < kW; ++x) {
+      uint32_t const kPixel = scratch.GetPixel(x, y);
+      if ((kPixel & 0x00FFFFFFU) == 0U) {
+        continue;
+      }
+      BlendPixel(surface, kX0 + x, kY0 + y, kPixel, 0.9F);
+    }
+  }
+}
+
+void TouchControls::DrawOverlay(SDL_Surface& surface, Gfx& gfx) {
+  if (!Enabled() || !draw_overlay_) {
+    return;
+  }
+  RecomputeLayout(gfx);
+  if (layout_w_ <= 0 || layout_h_ <= 0) {
+    return;
+  }
+  float const kStickR =
+      std::clamp(static_cast<float>(std::min(layout_w_, layout_h_)) * 0.20F, 34.0F, 110.0F);
+
+  // Drążki: podstawa + gałka (gałka idzie za palcem, przycięta do promienia).
+  for (int i = 0; i < 2; ++i) {
+    Stick const& s = sticks_[i];
+    float const kCx = s.active ? s.base_x : s.base_x;
+    float const kCy = s.active ? s.base_y : s.base_y;
+    DrawDisc(surface, kCx, kCy, kStickR, kZoneFill, 1.0F,
+             s.active ? kZoneRingHot : kZoneRing, s.active ? 0.85F : 0.45F);
+    if (s.active) {
+      float kDx = s.x - s.base_x;
+      float kDy = s.y - s.base_y;
+      float const kLen = std::sqrt(kDx * kDx + kDy * kDy);
+      if (kLen > kStickR) {
+        kDx = kDx / kLen * kStickR;
+        kDy = kDy / kLen * kStickR;
+      }
+      DrawDisc(surface, kCx + kDx, kCy + kDy, kStickR * 0.42F, kKnob, 1.0F, 0x33FFFFFF, 0.5F);
+    }
+  }
+
+  // Przyciski akcji.
+  struct BtnStyle {
+    uint32_t color;
+    char const* label;
+  };
+  BtnStyle const kStyles[kBtnCount] = {{kBtnFire, "OGIEN"},
+                                       {kBtnJump, "SKOK"},
+                                       {kBtnRope, "LINA"},
+                                       {kBtnChange, "BRON"}};
+  for (int i = 0; i < kBtnCount; ++i) {
+    Button const& b = buttons_[i];
+    DrawDisc(surface, b.x, b.y, b.r, kStyles[i].color, b.down ? 1.0F : 0.75F,
+             0xAAFFFFFF, b.down ? 1.0F : 0.55F);
+    DrawLabel(surface, gfx, kStyles[i].label, b.x, b.y);
+  }
+}
