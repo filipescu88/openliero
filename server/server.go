@@ -338,6 +338,12 @@ func (s *Server) sendError(to *net.UDPAddr, code byte, message string) {
 }
 
 func (s *Server) generateRoomCode() string {
+	return newRoomCode(func(code string) bool { _, exists := s.rooms[code]; return exists })
+}
+
+// newRoomCode returns a random room code for which taken() is false, or ""
+// if none was found. Shared by the UDP signaling server and the WebSocket hub.
+func newRoomCode(taken func(code string) bool) string {
 	const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 	const maxAttempts = 100
 	b := make([]byte, RoomCodeLen)
@@ -347,7 +353,7 @@ func (s *Server) generateRoomCode() string {
 			b[i] = chars[b[i]%byte(len(chars))]
 		}
 		code := string(b)
-		if _, exists := s.rooms[code]; !exists {
+		if !taken(code) {
 			return code
 		}
 	}
