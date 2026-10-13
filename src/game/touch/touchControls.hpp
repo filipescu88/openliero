@@ -30,6 +30,10 @@ struct TouchControls {
     kBtnJump,
     kBtnRope,
     kBtnChange,
+    // MENU (ESC): wyjście do menu gry. W tej samej kolumnie co akcje, żeby dotyk
+    // w kolumnie nigdy nie był „tapnięciem” (= strzałem) — inaczej każda próba
+    // trafienia w przycisk kończyłaby się strzałem albo wyjściem do menu.
+    kBtnMenu,
     kBtnCount,
   };
 
@@ -87,6 +91,12 @@ struct TouchControls {
 
   std::array<Stick, 2> sticks_{};  // 0 = ruch, 1 = celowanie
   std::array<Button, kBtnCount> buttons_{};
+  // Cała kolumna przycisków: dotyk tutaj (etykieta, przerwa między krążkami)
+  // trafia w najbliższy przycisk, zamiast być „tapnięciem” (= strzał).
+  float zone_x0_ = 0.0F;
+  float zone_y0_ = 0.0F;
+  float zone_x1_ = 0.0F;
+  float zone_y1_ = 0.0F;
 
   // Które klawisze DOS wcisnęła nakładka (żeby nie zwalniać klawiszy klawiatury).
   // To JEDYNE źródło prawdy o stanie dotyku: gra czyści `gfx.dos_keys` co klatkę

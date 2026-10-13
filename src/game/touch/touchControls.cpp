@@ -141,8 +141,9 @@ void TouchControls::RecomputeLayout(Gfx& gfx) {
   float const kMin = static_cast<float>(std::min(w, h));
   float const kMargin = std::max(6.0F, kMin * 0.03F);
   float const kStickR = std::clamp(kMin * 0.20F, 34.0F, 110.0F);
-  float const kBtnR = std::clamp(kMin * 0.105F, 18.0F, 64.0F);
-  float const kGap = kBtnR * 0.55F;
+  float const kBtnR = std::clamp(kMin * 0.10F, 20.0F, 46.0F);
+  float const kStepY = kBtnR * 1.85F;          // odstęp między krążkami w kolumnie
+  float const kGap = kBtnR * 0.55F;            // odstęp drążka od kolumny przycisków
 
   // Lewy drążek: ruch + celowanie (odpowiednik strzałek).
   sticks_[0].base_x = kMargin + kStickR;
@@ -151,16 +152,27 @@ void TouchControls::RecomputeLayout(Gfx& gfx) {
   sticks_[1].base_x = static_cast<float>(w) - kMargin - (kBtnR * 2.0F) - kGap - kStickR;
   sticks_[1].base_y = static_cast<float>(h) - kMargin - kStickR;
 
-  // Kolumna przycisków przy prawej krawędzi: OGIEN (dół) → SKOK → LINA → BRON.
+  // Kolumna przycisków przy prawej krawędzi: OGIEN (dół) → SKOK → LINA → BRON → MENU.
   float const kColX = static_cast<float>(w) - kMargin - kBtnR;
   float y = static_cast<float>(h) - kMargin - kBtnR;
   buttons_[kBtnFire] = {kColX, y, kBtnR, false, 0};
-  y -= (kBtnR * 2.0F) + kGap;
+  y -= kStepY;
   buttons_[kBtnJump] = {kColX, y, kBtnR * 0.85F, false, 0};
-  y -= (kBtnR * 1.7F) + kGap;
+  y -= kStepY;
   buttons_[kBtnRope] = {kColX, y, kBtnR * 0.80F, false, 0};
-  y -= (kBtnR * 1.6F) + kGap;
+  y -= kStepY;
   buttons_[kBtnChange] = {kColX, y, kBtnR * 0.80F, false, 0};
+  y -= kStepY;
+  buttons_[kBtnMenu] = {kColX, y, kBtnR * 0.70F, false, 0};
+
+  // Cała kolumna (od góry BRONIA do dołu ekranu) to strefa przycisków. Dotyk
+  // tutaj — nawet w przerwę albo w etykietę — trafia w najbliższy przycisk.
+  // Wcześniej niecelny dotyk po prawej stronie kończył się „tapnięciem”, czyli
+  // strzałem, więc wszystkie przyciski wyglądały jak OGIEN.
+  zone_x0_ = kColX - (kBtnR * 1.55F);
+  zone_x1_ = static_cast<float>(w);
+  zone_y0_ = buttons_[kBtnMenu].y - (kBtnR * 1.10F);
+  zone_y1_ = static_cast<float>(h);
 }
 
 void TouchControls::SimulateFinger(SDL_FingerID id, bool down, float nx, float ny, Gfx& gfx) {
@@ -210,6 +222,11 @@ void TouchControls::HandleEvent(SDL_Event const& ev, Gfx& gfx) {
     if (best >= 0) {
       buttons_[best].down = true;
       buttons_[best].finger = kId;
+      if (best == kBtnMenu) {
+        // MENU = ESC, tak jak START na padzie (Gfx::DispatchGamepadInput):
+        // kontroler (LocalController::OnKey) wygasza i wraca do menu.
+        PulseKey(gfx, kDkEscape, 2);
+      }
       return;
     }
 
@@ -228,7 +245,29 @@ void TouchControls::HandleEvent(SDL_Event const& ev, Gfx& gfx) {
       }
     }
 
-    // 3) poza strefami → potencjalne tapnięcie (potwierdzenie)
+    // 3) gdziekolwiek w kolumnie przycisków → NAJBLIŻSZY przycisk (bez tapnięcia:
+    //    tapnięcie w grze to strzał, a tu chodziło właśnie o skok/linę/broń).
+    if ((kX >= zone_x0_) && (kX <= zone_x1_) && (kY >= zone_y0_) && (kY <= zone_y1_)) {
+      int nearest = 0;
+      float nearest_d = 1e9F;
+      for (int i = 0; i < kBtnCount; ++i) {
+        float const kDx = kX - buttons_[i].x;
+        float const kDy = kY - buttons_[i].y;
+        float const kD = std::sqrt((kDx * kDx) + (kDy * kDy));
+        if (kD < nearest_d) {
+          nearest_d = kD;
+          nearest = i;
+        }
+      }
+      buttons_[nearest].down = true;
+      buttons_[nearest].finger = kId;
+      if (nearest == kBtnMenu) {
+        PulseKey(gfx, kDkEscape, 2);
+      }
+      return;
+    }
+
+    // 4) poza strefami → potencjalne tapnięcie (potwierdzenie)
     tap_pending_ = true;
     tap_finger_ = kId;
     tap_x_ = kX;
@@ -564,11 +603,13 @@ void TouchControls::DrawOverlay(SDL_Surface& surface, Gfx& gfx) {
   BtnStyle const kStyles[kBtnCount] = {{.color = kBtnFire, .label = "OGIEN"},
                                        {.color = kBtnJump, .label = "SKOK"},
                                        {.color = kBtnRope, .label = "LINA"},
-                                       {.color = kBtnChange, .label = "BRON"}};
+                                       {.color = kBtnChange, .label = "BRON"},
+                                       {.color = 0xFF444444, .label = "MENU"}};
   for (int i = 0; i < kBtnCount; ++i) {
     Button const& b = buttons_[i];
     DrawDisc(surface, b.x, b.y, b.r, kStyles[i].color, b.down ? 1.0F : 0.75F, 0xAAFFFFFF,
              b.down ? 1.0F : 0.55F);
     DrawLabel(surface, gfx, kStyles[i].label, b.x, b.y);
   }
+
 }
