@@ -87,16 +87,20 @@ struct TouchControls {
   std::array<Button, kBtnCount> buttons_{};
 
   // Które klawisze DOS wcisnęła nakładka (żeby nie zwalniać klawiszy klawiatury).
+  // To JEDYNE źródło prawdy o stanie dotyku: gra czyści `gfx.dos_keys` co klatkę
+  // (ClearKeys), więc „czy klawisz jest wciśnięty” nie można wywnioskować z gfx.
   std::array<bool, kMaxDosKey> owned_dos_{};
   std::unordered_set<uint32_t> owned_ex_{};
   // Klawisze „chciane” w tej klatce (ustawiane przez SetActionKey) — potrzebne, żeby
   // sprzątanie na końcu Apply nie zwalniało klawiszy właśnie wciśniętych.
   std::array<bool, kMaxDosKey> wanted_dos_{};
   std::unordered_set<uint32_t> wanted_ex_{};
+  // Ile klatek trwać ma jeszcze blokada kolejnego impulsu kierunkowego (menu).
+  int nudge_cooldown_ = 0;
   // Ile klatek trzymać klawisz-impuls (menu/tap); indeks = kod DOS.
   std::array<int, kMaxDosKey> pulse_frames_{};
-  // Stan „impulsu kierunkowego” drążka: [drążek][oś] = -1/0/1 (0 = wrócił do martwej strefy).
-  std::array<std::array<int, 2>, 2> nudge_{};
+  // Czy oś drążka wróciła do środka (uzbrojona do następnego impulsu kierunkowego).
+  std::array<std::array<bool, 2>, 2> nudge_armed_{};
 
   // Potencjalne tapnięcie poza strefami (potwierdzenie w menu).
   bool tap_pending_ = false;

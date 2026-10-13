@@ -347,6 +347,44 @@ void Gfx::SetVideoMode() {
     window.addEventListener('orientationchange', fit);
     // SDL sam potrafi zmienić rozmiar kanwy pod okno — pilnujemy swoich 640×400.
     setInterval(fit, 1000);
+
+    // Telefon: chowamy pasek narzędzi powłoki Emscripten (checkboxy „Resize canvas”,
+    // „Fullscreen”, status, log) — gra ma zająć cały ekran. Wyjątkiem jest #output,
+    // bo tam trafiają komunikaty błędów gry.
+    const hide = () => {
+      document.body.style.margin = '0';
+      document.body.style.background = '#000';
+      document.body.style.overflow = 'hidden';
+      // Powłoka Emscripten: pasek checkboxów (#controls), status, spinner, logo,
+      // pasek postępu — chowamy wszystko poza samą kanwą i #output (komunikaty błędów).
+      document.querySelectorAll('#controls, #status, #spinner, #progress').forEach((el) => {
+        el.style.display = 'none';
+      });
+      const logo = document.getElementById('emscripten_logo');
+      const logoLink = logo ? logo.closest('a') : null;
+      if (logoLink) {
+        logoLink.style.display = 'none';
+      }
+      document.querySelectorAll('div.emscripten').forEach((el) => {
+        el.style.display = 'none';
+      });
+      const out = document.getElementById('output');
+      if (out) {
+        out.style.position = 'absolute';
+        out.style.left = '4px';
+        out.style.bottom = '4px';
+        out.style.width = '40vw';
+        out.style.height = '3em';
+        out.style.zIndex = '10';
+        out.style.background = 'rgba(0,0,0,0.5)';
+        out.style.border = '0';
+        out.style.color = '#fff';
+        out.style.font = '11px monospace';
+        out.style.pointerEvents = 'none';
+      }
+    };
+    hide();
+    setInterval(hide, 1000);
   });
 #endif
   if (sdl_spectator_renderer) {

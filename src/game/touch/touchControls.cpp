@@ -179,7 +179,8 @@ void TouchControls::HandleEvent(SDL_Event const& ev, Gfx& gfx) {
       return;
     }
 
-    // 2) drążki — „chwyt” w promieniu strefy, środek drążka = miejsce dotknięcia
+    // 2) drążki — „chwyt” w promieniu strefy. Środek drążka jest STAŁY (środek
+    //    strefy z layoutu) — dotknięcie nie przesuwa drążka pod palec.
     float const kStickR = std::clamp(static_cast<float>(std::min(layout_w_, layout_h_)) * 0.20F, 34.0F,
                                      110.0F);
     for (int i = 0; i < 2; ++i) {
@@ -187,8 +188,6 @@ void TouchControls::HandleEvent(SDL_Event const& ev, Gfx& gfx) {
       if (!s.active && InDisc(kX, kY, s.base_x, s.base_y, kStickR * kStickZoneScale)) {
         s.active = true;
         s.finger = kId;
-        s.base_x = kX;
-        s.base_y = kY;
         s.x = kX;
         s.y = kY;
         return;
@@ -212,8 +211,8 @@ void TouchControls::HandleEvent(SDL_Event const& ev, Gfx& gfx) {
       if (kReleased) {
         s.active = false;
         s.finger = 0;
-        nudge_.at(static_cast<std::size_t>(&s - sticks_.data())).at(0) = 0;
-        nudge_.at(static_cast<std::size_t>(&s - sticks_.data())).at(1) = 0;
+        nudge_armed_.at(static_cast<std::size_t>(&s - sticks_.data())).at(0) = true;
+        nudge_armed_.at(static_cast<std::size_t>(&s - sticks_.data())).at(1) = true;
       }
       return;
     }
@@ -258,10 +257,12 @@ void TouchControls::PulseKey(Gfx& gfx, uint32_t code, int frames) {
   pulse_frames_[code] = std::max(pulse_frames_[code], frames);
   // Klawiatura w ProcessEvent woła też controller->OnKey — ekran wyboru broni i
   // inne stany sterowane kontrolerem (nie samym gfx.dos_keys) potrzebują tego
-  // samego powiadomienia, inaczej dotyk nie ruszy ich wcale.
-  if (gfx.controller) {
+  // samego powiadomienia, inaczej dotyk nie ruszy ich wcale. Powiadamiamy tylko,
+  // gdy klawisz nie jest już trzymany (inaczej sztuczna krawędź = dodatkowy krok menu).
+  if (!owned_dos_[code] && gfx.controller) {
     gfx.controller->OnKey(code, /*state=*/true);
   }
+  owned_dos_[code] = true;
 }
 
 uint32_t TouchControls::ActionKeyCode(Gfx& gfx, int control) const {
@@ -282,15 +283,19 @@ void TouchControls::SetActionKey(Gfx& gfx, int control, bool down) {
   }
   if (kCode < kMaxDosKey) {
     if (down) {
-      if (!gfx.dos_keys[kCode]) {
+      // Stan trzymamy po SWOJEJ stronie: gra zeruje `gfx.dos_keys` co klatkę
+      // (ClearKeys), więc „czy już wciśnięty” sprawdzamy w owned_dos_, a nie w gfx.
+      // Powiadamiamy kontroler tylko o ZMIANIE — inaczej każde odtworzenie klawisza
+      // po ClearKeys dawałoby nową krawędź i menu przewijałoby się co klatkę.
+      if (!owned_dos_[kCode]) {
         std::fprintf(stderr, "[touch] control=%d key=%u DOWN\n", control, kCode);
+        owned_dos_[kCode] = true;
+        if (gfx.controller) {
+          gfx.controller->OnKey(kCode, /*state=*/true);
+        }
       }
       gfx.dos_keys[kCode] = true;
-      owned_dos_[kCode] = true;
       wanted_dos_[kCode] = true;
-      if (gfx.controller) {
-        gfx.controller->OnKey(kCode, /*state=*/true);
-      }
     } else if (owned_dos_[kCode] && (pulse_frames_[kCode] == 0)) {
       std::fprintf(stderr, "[touch] control=%d key=%u up\n", control, kCode);
       gfx.dos_keys[kCode] = false;
@@ -300,12 +305,20 @@ void TouchControls::SetActionKey(Gfx& gfx, int control, bool down) {
       }
     }
   } else if (down) {
-    std::fprintf(stderr, "[touch] control=%d exkey=%u DOWN\n", control, kCode);
+    if (owned_ex_.count(kCode) == 0U) {
+      std::fprintf(stderr, "[touch] control=%d exkey=%u DOWN\n", control, kCode);
+      if (gfx.controller) {
+        gfx.controller->OnKey(kCode, /*state=*/true);
+      }
+    }
     gfx.ex_keys[kCode] = true;
     owned_ex_.insert(kCode);
     wanted_ex_.insert(kCode);
   } else if (owned_ex_.erase(kCode) > 0U) {
     gfx.ex_keys[kCode] = false;
+    if (gfx.controller) {
+      gfx.controller->OnKey(kCode, /*state=*/false);
+    }
   }
 }
 
@@ -379,25 +392,29 @@ void TouchControls::Apply(Gfx& gfx) {
   SetActionKey(gfx, WormSettings::kDig, buttons_[kBtnRope].down);
   SetActionKey(gfx, WormSettings::kChange, buttons_[kBtnChange].down);
 
-  // 3) impulsy kierunkowe: jedno wychylenie drążka = jedno naciśnięcie strzałki
-  //    (menu i ekran broni używają TestSdlKeyOnce), reset po powrocie do martwej strefy.
+  // 3) impulsy kierunkowe dla menu: jedno wychylenie = jedno naciśnięcie strzałki,
+  //    ale z blokadą czasową i wymogiem powrotu osi do środka — inaczej menu
+  //    „przewijało się” kilka pozycji na sekundę (zgłoszone przez ziomka).
+  constexpr int kNudgeCooldownFrames = 20;  // ~330 ms przy 60 fps
+  if (nudge_cooldown_ > 0) {
+    --nudge_cooldown_;
+  }
   if (kMove.active) {
     for (int axis = 0; axis < 2; ++axis) {
       float const kV = (axis == 0) ? kMoveAx.first : kMoveAx.second;
-      int& nudge = nudge_[0].at(static_cast<std::size_t>(axis));
-      if (std::fabs(kV) > (kStickDead * 1.4F)) {
-        if (nudge == 0) {
-          SDL_Scancode sc = SDL_SCANCODE_RETURN;
-          if (axis == 0) {
-            sc = (kV < 0.0F) ? SDL_SCANCODE_LEFT : SDL_SCANCODE_RIGHT;
-          } else {
-            sc = (kV < 0.0F) ? SDL_SCANCODE_UP : SDL_SCANCODE_DOWN;
-          }
-          PulseKey(gfx, SDLToDOSKey(sc), 3);
-          nudge = (kV < 0.0F) ? -1 : 1;
+      auto& armed = nudge_armed_[0].at(static_cast<std::size_t>(axis));
+      if (std::fabs(kV) < (kStickDead * 0.5F)) {
+        armed = true;  // oś wróciła do środka — można dać następny impuls
+      } else if ((std::fabs(kV) > (kStickDead * 1.4F)) && armed && (nudge_cooldown_ == 0)) {
+        SDL_Scancode sc = SDL_SCANCODE_RETURN;
+        if (axis == 0) {
+          sc = (kV < 0.0F) ? SDL_SCANCODE_LEFT : SDL_SCANCODE_RIGHT;
+        } else {
+          sc = (kV < 0.0F) ? SDL_SCANCODE_UP : SDL_SCANCODE_DOWN;
         }
-      } else if (std::fabs(kV) < kStickDead) {
-        nudge = 0;
+        PulseKey(gfx, SDLToDOSKey(sc), 3);
+        armed = false;
+        nudge_cooldown_ = kNudgeCooldownFrames;
       }
     }
   }
