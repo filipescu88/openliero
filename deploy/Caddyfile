@@ -1,0 +1,27 @@
+# Serves the web build and forwards the relay (/ws, /healthz) to the relay
+# container. Plain HTTP: TLS ends at Cloudflare, and cloudflared reaches this
+# server inside the compose network (http://web:80).
+{
+	admin off
+	auto_https off
+}
+
+:80 {
+	encode zstd gzip
+
+	handle /ws {
+		reverse_proxy relay:8080
+	}
+
+	handle /healthz {
+		reverse_proxy relay:8080
+	}
+
+	handle {
+		root * /srv
+		file_server
+		# The file names stay the same between versions (openliero.js/.wasm/
+		# .data), so browsers must re-check them; ETags keep that cheap.
+		header Cache-Control "no-cache"
+	}
+}
