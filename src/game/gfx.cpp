@@ -304,87 +304,25 @@ void Gfx::Init() {
 
 void Gfx::SetVideoMode() {
 #if OPENLIERO_EMSCRIPTEN
-  // Telefon: kanwa zostaje w rozdzielczości gry (640×400), a CSS skaluje ją do
-  // największego prostokąta 16:10 mieszczącego się na ekranie (z zachowaniem
-  // proporcji — bez rozciągania!). Dzięki temu współrzędne dotyku znormalizowane
-  // przez SDL do rozmiaru kanwy pokrywają się z układem nakładki w przestrzeni gry.
-  // Uwaga: zmiana orientacji w trakcie działania wymaga odświeżenia strony (v1).
+  // Telefon: kanwa zostaje w rozdzielczości gry (640x400), a CSS skaluje ją do
+  // największego prostokąta 16:10 mieszczącego się na ekranie (bez rozciągania),
+  // dzięki czemu współrzędne dotyku znormalizowane przez SDL pokrywają się z
+  // układem nakładki. Całą resztę (pełny ekran, brak przewijania, podpowiedź
+  // „obróć telefon”, log błędów) robi powłoka: src/web/shell.html.
   EM_ASM({
     const canvas = document.querySelector('#canvas');
     if (!canvas) {
       return;
     }
-    // Rozdzielczość gry (kanwa w pikselach urządzenia) — trzymamy ją na sztywno,
-    // żeby SDL nie rozciągnął klatki 640×400 do kształtu okna. CSS skaluje kanwę
-    // do największego prostokąta 16:10 mieszczącego się na ekranie.
-    const GAME_W = 640;
-    const GAME_H = 400;
-    const fit = () => {
-      if (canvas.width !== GAME_W) {
-        canvas.width = GAME_W;
-      }
-      if (canvas.height !== GAME_H) {
-        canvas.height = GAME_H;
-      }
-      const ratio = GAME_W / GAME_H;
-      let w = window.innerWidth;
-      let h = window.innerHeight;
-      if (w / h > ratio) {
-        w = h * ratio;
-      } else {
-        h = w / ratio;
-      }
-      canvas.style.position = 'absolute';
-      canvas.style.width = `${w}px`;
-      canvas.style.height = `${h}px`;
-      canvas.style.left = `${(window.innerWidth - w) / 2}px`;
-      canvas.style.top = `${(window.innerHeight - h) / 2}px`;
-      canvas.style.imageRendering = 'pixelated';
-      canvas.style.touchAction = 'none';
-    };
-    fit();
-    window.addEventListener('resize', fit);
-    window.addEventListener('orientationchange', fit);
-    // SDL sam potrafi zmienić rozmiar kanwy pod okno — pilnujemy swoich 640×400.
-    setInterval(fit, 1000);
-
-    // Telefon: chowamy pasek narzędzi powłoki Emscripten (checkboxy „Resize canvas”,
-    // „Fullscreen”, status, log) — gra ma zająć cały ekran. Wyjątkiem jest #output,
-    // bo tam trafiają komunikaty błędów gry.
-    const hide = () => {
-      document.body.style.margin = '0';
-      document.body.style.background = '#000';
-      document.body.style.overflow = 'hidden';
-      // Powłoka Emscripten: pasek checkboxów (#controls), status, spinner, logo,
-      // pasek postępu — chowamy wszystko poza samą kanwą i #output (komunikaty błędów).
-      document.querySelectorAll('#controls, #status, #spinner, #progress').forEach((el) => {
-        el.style.display = 'none';
-      });
-      const logo = document.getElementById('emscripten_logo');
-      const logoLink = logo ? logo.closest('a') : null;
-      if (logoLink) {
-        logoLink.style.display = 'none';
-      }
-      document.querySelectorAll('div.emscripten').forEach((el) => {
-        el.style.display = 'none';
-      });
-      const out = document.getElementById('output');
-      if (out) {
-        out.style.position = 'absolute';
-        out.style.left = '4px';
-        out.style.bottom = '4px';
-        out.style.width = '40vw';
-        out.style.height = '3em';
-        out.style.zIndex = '10';
-        out.style.background = 'rgba(0,0,0,0.5)';
-        out.style.border = '0';
-        out.style.color = '#fff';
-        out.style.font = '11px monospace';
-        out.style.pointerEvents = 'none';
-      }
-    };
-    hide();
-    setInterval(hide, 1000);
+    // SDL potrafi przestawić kanwę pod okno — pilnujemy własnych 640x400.
+    if (canvas.width !== 640) {
+      canvas.width = 640;
+    }
+    if (canvas.height !== 400) {
+      canvas.height = 400;
+    }
+    canvas.style.imageRendering = 'pixelated';
+    canvas.style.touchAction = 'none';
   });
 #endif
   if (sdl_spectator_renderer) {

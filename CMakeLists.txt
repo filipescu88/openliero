@@ -308,6 +308,7 @@ elseif(EMSCRIPTEN)
     -sALLOW_MEMORY_GROWTH=1
     -sMAX_WEBGL_VERSION=2
     -sEXPORTED_RUNTIME_METHODS=FS
+    "SHELL:--shell-file ${CMAKE_SOURCE_DIR}/src/web/shell.html"
     "SHELL:--preload-file ${CMAKE_SOURCE_DIR}/data/Profiles@/openliero/Profiles"
     "SHELL:--preload-file ${CMAKE_SOURCE_DIR}/data/Resources@/openliero/Resources"
     "SHELL:--preload-file ${CMAKE_SOURCE_DIR}/data/Setups@/openliero/Setups"

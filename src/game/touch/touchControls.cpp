@@ -137,7 +137,6 @@ void TouchControls::RecomputeLayout(Gfx& gfx) {
   layout_w_ = w;
   layout_h_ = h;
   layout_valid_ = true;
-  std::fprintf(stderr, "[touch] layout %dx%d\n", w, h);
 
   float const kMin = static_cast<float>(std::min(w, h));
   float const kMargin = std::max(6.0F, kMin * 0.03F);
