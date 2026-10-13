@@ -26,3 +26,7 @@ server/openliero-relay
 
 # Generated large test level (not committed — generate via tools/gen_large_test.py)
 data/TC/openliero/Levels/large_test.lev
+
+# Deployment (deploy/): server secrets and the staged web build
+deploy/.env
+deploy/web-dist/

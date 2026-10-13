@@ -1,0 +1,80 @@
+---
+
+# Publishes the web image that deploy/deploy.sh pulls: the web build of the
+# game served by Caddy (deploy/web.Dockerfile, target web-prebuilt). The relay
+# image next to it comes from relay-server.yml.
+
+name: Build and push web image
+
+on:  # yamllint disable-line rule:truthy
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/web
+
+concurrency:
+  group: web-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      # Same Emscripten build as the "emscripten" job in build.yml.
+      - name: Setup Emscripten
+        uses: mymindstorm/setup-emsdk@v16
+
+      - name: Get cmake/ninja
+        uses: lukka/get-cmake@latest
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgDirectory: '${{ github.workspace }}/tools/vcpkg/vcpkg'
+          vcpkgConfigurationJsonGlob: 'vcpkg-configuration.json'
+          appendedCacheKey: 'sdl3-v2'
+
+      - name: Build (Emscripten)
+        run: |
+          cmake --preset emscripten
+          cmake --build build/emscripten --config Release
+          cmake --install build/emscripten --config Release --prefix deploy/web-dist
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: deploy/web.Dockerfile
+          target: web-prebuilt
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}

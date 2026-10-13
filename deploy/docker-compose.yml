@@ -1,0 +1,41 @@
+# Liero online: the web build + the relay, published through a Cloudflare
+# Tunnel (no open ports on the router, no TLS certificates to manage).
+# Settings come from deploy/.env (created by deploy.sh on its first run).
+#
+#   phone ──https/wss──▶ Cloudflare ──tunnel──▶ cloudflared ──▶ web (Caddy) ──/ws──▶ relay
+name: openliero
+
+services:
+  relay:
+    image: ${RELAY_IMAGE:-ghcr.io/filipescu88/openliero/relay-server:latest}
+    build: ../server
+    restart: unless-stopped
+    command: ["-http", ":8080"]
+    environment:
+      # The page is opened on the site's domain; let its WebSockets in.
+      WS_ORIGINS: "${SITE_DOMAIN:?set SITE_DOMAIN in deploy/.env},www.${SITE_DOMAIN}"
+
+  web:
+    image: ${WEB_IMAGE:-ghcr.io/filipescu88/openliero/web:latest}
+    build:
+      context: ..
+      dockerfile: deploy/web.Dockerfile
+      target: web
+    restart: unless-stopped
+    environment:
+      SITE_URL: "https://${SITE_DOMAIN}"
+    depends_on:
+      - relay
+    # Only for checks from the server itself (deploy.sh); not reachable from
+    # outside. Visitors come in through the tunnel.
+    ports:
+      - "127.0.0.1:${WEB_PORT:-8088}:80"
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: ["tunnel", "--no-autoupdate", "run"]
+    environment:
+      TUNNEL_TOKEN: "${TUNNEL_TOKEN:?set TUNNEL_TOKEN in deploy/.env}"
+    depends_on:
+      - web

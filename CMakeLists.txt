@@ -321,7 +321,9 @@ elseif(EMSCRIPTEN)
     "SHELL:--preload-file ${CMAKE_SOURCE_DIR}/data/Setups@/openliero/Setups"
     "SHELL:--preload-file ${CMAKE_SOURCE_DIR}/data/TC@/openliero/TC"
   )
-  set_target_properties(openliero PROPERTIES SUFFIX ".html")
+  # Relink when the page shell changes (it is only named in a link flag).
+  set_target_properties(openliero PROPERTIES SUFFIX ".html"
+    LINK_DEPENDS "${CMAKE_SOURCE_DIR}/src/web/shell.html")
   target_compile_definitions(game PUBLIC OPENLIERO_EMSCRIPTEN=1)
 else()
   add_executable(openliero src/game/main.cpp)
