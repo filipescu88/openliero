@@ -7,10 +7,16 @@
 #include <cstdint>
 #include <memory>
 
+#include "common.hpp"
 #include "controller/controller.hpp"
+#include "controller/localController.hpp"
+#include "filesystem.hpp"
 #include "gfx.hpp"
+#include "level.hpp"
+#include "math.hpp"
 #include "settings.hpp"
 #include "touch/touchControls.hpp"
+#include "worm.hpp"
 
 namespace {
 
@@ -136,4 +142,131 @@ TEST_CASE("Mostly-vertical push is up only, diagonal is up + side") {
   f.touch.Apply(gfx, f.now_ms);
   CHECK(gfx.TestControl(WormSettings::kUp));
   CHECK(gfx.TestControl(WormSettings::kRight));
+}
+
+namespace {
+
+// Button centres for the 640×400 layout (see TouchControls::RecomputeLayout):
+// fire r=50 at (578, 338); the arc is 118 px away from it.
+constexpr float kJumpX = 460.0F;
+constexpr float kJumpY = 338.0F;
+constexpr float kRopeX = 494.6F;
+constexpr float kRopeY = 254.6F;
+constexpr float kDigX = 578.0F;
+constexpr float kDigY = 146.0F;
+constexpr SDL_FingerID kThumb = 9;
+
+void Touch(TouchControls& t, bool down, float x, float y) {
+  t.SimulateFinger(kThumb, down, x / kW, y / kH, gfx);
+}
+
+}  // namespace
+
+TEST_CASE("A tap shorter than a frame still reaches the game") {
+  TouchFixture f;
+  // Finger down and up arrive in the same event poll, before the frame.
+  Touch(f.touch, /*down=*/true, kJumpX, kJumpY);
+  Touch(f.touch, /*down=*/false, kJumpX, kJumpY);
+  f.touch.Apply(gfx, f.now_ms);
+  CHECK(gfx.TestControl(WormSettings::kJump));
+  f.touch.Apply(gfx, f.now_ms + 16);
+  CHECK_FALSE(gfx.TestControl(WormSettings::kJump));
+}
+
+TEST_CASE("LINA presses change and jump together, briefly") {
+  TouchFixture f;
+  Touch(f.touch, /*down=*/true, kRopeX, kRopeY);
+  f.touch.Apply(gfx, f.now_ms);
+  CHECK(gfx.TestControl(WormSettings::kChange));
+  CHECK(gfx.TestControl(WormSettings::kJump));
+  // Released after a few frames even while the finger stays on the button, so
+  // a held change key does not block walking.
+  for (int i = 0; i < 4; ++i) {
+    f.touch.Apply(gfx, f.now_ms);
+  }
+  CHECK_FALSE(gfx.TestControl(WormSettings::kChange));
+  CHECK_FALSE(gfx.TestControl(WormSettings::kJump));
+  Touch(f.touch, /*down=*/false, kRopeX, kRopeY);
+}
+
+TEST_CASE("The right side has no stick: no movement and no auto-fire") {
+  TouchFixture f;
+  // Where the old aim stick was, dragged hard to the side and up.
+  Touch(f.touch, /*down=*/true, 446.0F, 308.0F);
+  SDL_Event ev{};
+  ev.type = SDL_EVENT_FINGER_MOTION;
+  ev.tfinger.fingerID = kThumb;
+  ev.tfinger.x = 380.0F / kW;
+  ev.tfinger.y = 240.0F / kH;
+  f.touch.HandleEvent(ev, gfx);
+  f.touch.Apply(gfx, f.now_ms);
+  CHECK_FALSE(gfx.TestControl(WormSettings::kLeft));
+  CHECK_FALSE(gfx.TestControl(WormSettings::kRight));
+  CHECK_FALSE(gfx.TestControl(WormSettings::kUp));
+  CHECK_FALSE(gfx.TestControl(WormSettings::kFire));
+}
+
+TEST_CASE("KOP digs with left+right when no dig key is bound") {
+  TouchFixture f;
+  REQUIRE(gfx.settings->worm_settings[0]->controls_ex[WormSettings::kDig] == 0);
+  Touch(f.touch, /*down=*/true, kDigX, kDigY);
+  f.touch.Apply(gfx, f.now_ms);
+  CHECK(gfx.TestControl(WormSettings::kLeft));
+  CHECK(gfx.TestControl(WormSettings::kRight));
+  Touch(f.touch, /*down=*/false, kDigX, kDigY);
+  f.touch.Apply(gfx, f.now_ms);
+  CHECK_FALSE(gfx.TestControl(WormSettings::kLeft));
+  CHECK_FALSE(gfx.TestControl(WormSettings::kRight));
+}
+
+TEST_CASE("Buttons drive a real match - LINA throws the rope and SKOK releases it") {
+  TouchFixture f;
+  PrecomputeTables();
+  auto common = std::make_shared<Common>();
+  common->load(FsNode("data") / "TC" / "openliero");
+  gfx.settings->record_replays = false;
+  gfx.settings->random_level = true;
+  gfx.settings->loading_time = 0;
+
+  auto lc = std::make_unique<LocalController>(common, gfx.settings);
+  auto* ctrl = lc.get();
+  Level level(*common);
+  level.GenerateFromSettings(*common, *gfx.settings, ctrl->game.rand);
+  ctrl->SwapLevel(level);
+  ctrl->ChangeState(kStateWeaponSelection);
+  ctrl->ChangeState(kStateGame);
+  gfx.controller = std::move(lc);
+
+  Worm const& worm = *ctrl->game.worms[0];
+  for (int i = 0; i < 3000 && !worm.visible; ++i) {
+    ctrl->Process();
+  }
+  REQUIRE(worm.visible);
+  REQUIRE_FALSE(worm.ninjarope.out);
+
+  // One frame of the overlay, then one tick of the game — like Gfx::RunOneFrame.
+  auto const kFrame = [&] {
+    f.touch.Apply(gfx, f.now_ms);
+    f.now_ms += 16;
+    ctrl->Process();
+  };
+
+  Touch(f.touch, /*down=*/true, kRopeX, kRopeY);
+  kFrame();
+  Touch(f.touch, /*down=*/false, kRopeX, kRopeY);
+  for (int i = 0; i < 5; ++i) {
+    kFrame();
+  }
+  CHECK(worm.ninjarope.out);
+  // The change key is not left held (it would block walking).
+  CHECK_FALSE(worm.Pressed(Worm::kChange));
+
+  // A quick tap on SKOK (down+up before the frame) removes the rope.
+  Touch(f.touch, /*down=*/true, kJumpX, kJumpY);
+  Touch(f.touch, /*down=*/false, kJumpX, kJumpY);
+  kFrame();
+  kFrame();
+  CHECK_FALSE(worm.ninjarope.out);
+
+  gfx.controller.reset();
 }

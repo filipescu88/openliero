@@ -20,19 +20,26 @@ struct Gfx;
 // snapshoty i determinizm (baseline F1) nie mają prawa się zmienić.
 //
 // Układ (współrzędne okna; nakładka skaluje się razem z oknem):
-//   lewy drążek  = ruch (lewo/prawo) + celowanie (góra/dół)
-//   prawy drążek = celowanie precyzyjne (góra/dół + obrót) i auto-ogień po wychyleniu
-//   przyciski    = OGIEN, SKOK, LINA, BRON w kolumnie przy prawej krawędzi
+//   lewy kciuk  = jeden drążek, 8 kierunków: chodzenie (lewo/prawo) + celowanie
+//                 (góra/dół) — dokładnie jak strzałki w Liero
+//   prawy kciuk = przyciski w łuku wokół dużego OGIEN: SKOK, LINA (sama robi
+//                 BRON+SKOK, czyli rzut liny), BRON (trzymaj + drążek w bok =
+//                 zmiana broni), KOP; MENU osobno w prawym górnym rogu
 //   tap poza strefami = potwierdzenie (ENTER) — pozwala przejść menu i wybór broni
+//
+// Bez drugiego drążka i bez auto-ognia: w Liero celownik się obraca (góra/dół),
+// a nie wskazuje kierunek palca, więc prawy drążek tylko dublował lewy, a jego
+// wychylenie w bok chodziło robakiem i samo strzelało.
 struct TouchControls {
   enum ButtonAction {
     kBtnFire = 0,
     kBtnJump,
     kBtnRope,
     kBtnChange,
-    // MENU (ESC): wyjście do menu gry. W tej samej kolumnie co akcje, żeby dotyk
-    // w kolumnie nigdy nie był „tapnięciem” (= strzałem) — inaczej każda próba
-    // trafienia w przycisk kończyłaby się strzałem albo wyjściem do menu.
+    kBtnDig,
+    // MENU (ESC): wyjście do menu gry. Leży w strefie przycisków, żeby dotyk przy
+    // nim nigdy nie był „tapnięciem” (= strzałem), ale trafia się w niego tylko
+    // bezpośrednio — niecelny dotyk w strefie nie wyrzuca z meczu.
     kBtnMenu,
     kBtnCount,
   };
@@ -40,7 +47,7 @@ struct TouchControls {
   struct Stick {
     bool active = false;
     SDL_FingerID finger = 0;
-    float base_x = 0.0F;  // środek drążka: miejsce dotknięcia (przeciągasz względem niego)
+    float base_x = 0.0F;  // stały środek drążka (z layoutu)
     float base_y = 0.0F;
     float x = 0.0F;
     float y = 0.0F;
@@ -52,6 +59,11 @@ struct TouchControls {
     float r = 0.0F;
     bool down = false;
     SDL_FingerID finger = 0;
+    // Czy Apply już widział ten przycisk wciśnięty. Szybkie tapnięcie potrafi
+    // przyjść jako dotknięcie i puszczenie w tej samej klatce — wtedy puszczenie
+    // czeka (release_pending), aż gra choć raz zobaczy wciśnięcie.
+    bool seen = false;
+    bool release_pending = false;
   };
 
   bool Enabled() const { return enabled_; }
@@ -75,6 +87,7 @@ struct TouchControls {
 
  private:
   void RecomputeLayout(Gfx& gfx);
+  void PressButton(Gfx& gfx, int index, SDL_FingerID finger);
   void PulseKey(Gfx& gfx, uint32_t code, int frames);
   uint32_t ActionKeyCode(Gfx& gfx, int control) const;
   void SetActionKey(Gfx& gfx, int control, bool down);
@@ -89,10 +102,10 @@ struct TouchControls {
   int layout_w_ = 0;
   int layout_h_ = 0;
 
-  std::array<Stick, 2> sticks_{};  // 0 = ruch, 1 = celowanie
+  Stick stick_{};
   std::array<Button, kBtnCount> buttons_{};
-  // Cała kolumna przycisków: dotyk tutaj (etykieta, przerwa między krążkami)
-  // trafia w najbliższy przycisk, zamiast być „tapnięciem” (= strzał).
+  // Strefa przycisków (prawy dolny róg): dotyk tutaj (etykieta, przerwa między
+  // krążkami) trafia w najbliższy przycisk, zamiast być „tapnięciem” (= strzał).
   float zone_x0_ = 0.0F;
   float zone_y0_ = 0.0F;
   float zone_x1_ = 0.0F;
@@ -110,10 +123,10 @@ struct TouchControls {
   // Ile klatek trzymać klawisz-impuls (tap/menu) zanim go zwolnic; indeks = kod DOS.
   std::array<int, kMaxDosKey> pulse_frames_{};
 
-  // Kierunki wychylone na drążku w poprzedniej klatce: [drążek][lewo, prawo, góra, dół].
+  // Kierunki wychylone na drążku w poprzedniej klatce: lewo, prawo, góra, dół.
   // Potrzebne do histerezy — bez niej palec na granicy strefy/sektora „mruga”
   // klawiszem (wiele naciśnięć w menu, szarpane celowanie w grze).
-  std::array<std::array<bool, 4>, 2> stick_dirs_{};
+  std::array<bool, 4> stick_dirs_{};
   // Autopowtarzanie trzymanego kierunku (jak klawiatura): kiedy (ms) wcisnąć
   // klawisz w `gfx` ponownie; 0 = kierunek nietrzymany. Indeks: lewo, prawo, góra, dół.
   std::array<uint64_t, 4> repeat_at_ms_{};
