@@ -29,6 +29,9 @@ struct RelayConnectState : AppState {
   std::string roomCode_;
   RelayClient relay_;
 
+  std::string inviteLink_;  // empty on native builds — nothing to share
+  bool shared_ = false;
+
   std::string statusLine1_;
   std::string statusLine2_;
   bool cancel_ = false;

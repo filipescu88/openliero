@@ -237,6 +237,7 @@ set(GAME_SOURCES ${SOURCES}
   src/game/netConnectState.cpp
   src/game/onlineConnectState.cpp
   src/game/relayConnectState.cpp
+  src/game/webPage.cpp
   src/game/statsState.cpp
   src/game/rematchState.cpp
   src/game/menu/booleanSwitchBehavior.cpp

@@ -8,6 +8,11 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>Liero</title>
+<meta name="description" content="Kultowa strzelanka robaków w przeglądarce — zagraj ze znajomym przez internet.">
+<!-- Podgląd linku (WhatsApp, Messenger, ...) dla zaproszeń ?join=KOD. -->
+<meta property="og:type" content="website">
+<meta property="og:title" content="Liero — zagraj ze mną!">
+<meta property="og:description" content="Kultowa strzelanka robaków w przeglądarce. Otwórz link, a gra sama dołączy do pokoju.">
 <style>
   :root { color-scheme: dark; }
   html, body {
@@ -17,8 +22,8 @@
     -webkit-tap-highlight-color: transparent;
     font-family: system-ui, arial, sans-serif;
   }
-  /* Kanwa zostaje w rozdzielczości gry (640x400 = 16:10); CSS skaluje ją
-     do największego prostokąta mieszczącego się na ekranie, bez rozciągania. */
+  /* Kanwa ma proporcje gry (16:10); CSS ustawia ją na największy prostokąt
+     mieszczący się na ekranie, bez rozciągania. */
   #canvas {
     position: fixed; display: block; background: #000; border: 0; outline: none;
     touch-action: none; image-rendering: pixelated; image-rendering: crisp-edges;
@@ -129,10 +134,10 @@
     if (key === lastKey) { return; }
     lastKey = key;
 
-    // SDL potrafi przestawić kanwę na rozmiar okna — pilnujemy własnych 640x400,
-    // bo tylko wtedy współrzędne dotyku pokrywają się z układem nakładki.
-    if (canvasElement.width !== GAME_W) { canvasElement.width = GAME_W; }
-    if (canvasElement.height !== GAME_H) { canvasElement.height = GAME_H; }
+    // Rozmiar bufora kanwy zostawiamy SDL-owi: ustawia go na rozmiar z CSS i sam
+    // skaluje klatkę 640x400 (SDL_SetRenderLogicalPresentation). Wymuszanie tu
+    // 640x400 rozjeżdżało się z oknem SDL i na dużym ekranie gra była powiększona
+    // w lewy dolny róg. Dotyk jest liczony względem kanwy (0..1), więc nadal pasuje.
 
     var ratio = GAME_W / GAME_H;
     var w = v.w, h = v.h;

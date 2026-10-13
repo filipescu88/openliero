@@ -35,6 +35,7 @@
 #include "netConnectState.hpp"
 #include "onlineConnectState.hpp"
 #include "relayConnectState.hpp"
+#include "webPage.hpp"
 
 #include "gfx/macros.hpp"
 
@@ -305,24 +306,16 @@ void Gfx::Init() {
 
 void Gfx::SetVideoMode() {
 #if OPENLIERO_EMSCRIPTEN
-  // Telefon: kanwa zostaje w rozdzielczości gry (640x400), a CSS skaluje ją do
-  // największego prostokąta 16:10 mieszczącego się na ekranie (bez rozciągania),
-  // dzięki czemu współrzędne dotyku znormalizowane przez SDL pokrywają się z
-  // układem nakładki. Całą resztę (pełny ekran, brak przewijania, podpowiedź
-  // „obróć telefon”, log błędów) robi powłoka: src/web/shell.html.
-  // To JavaScript: clang-format rozbiłby `!==` na `!= =`.
+  // Telefon: CSS (src/web/shell.html) ustawia kanwę na największy prostokąt
+  // 16:10 mieszczący się na ekranie; rozmiar jej bufora zostawiamy SDL-owi, który
+  // skaluje klatkę 640x400 sam (SDL_SetRenderLogicalPresentation). Całą resztę
+  // (pełny ekran, brak przewijania, podpowiedź „obróć telefon”, log błędów) robi
+  // powłoka.
   // clang-format off
   EM_ASM({
     const canvas = document.querySelector('#canvas');
     if (!canvas) {
       return;
-    }
-    // SDL potrafi przestawić kanwę pod okno — pilnujemy własnych 640x400.
-    if (canvas.width !== 640) {
-      canvas.width = 640;
-    }
-    if (canvas.height !== 400) {
-      canvas.height = 400;
     }
     canvas.style.imageRendering = 'pixelated';
     canvas.style.touchAction = 'none';
@@ -541,8 +534,11 @@ void Gfx::LoadMenus() {
       MenuItem(10, 10, "", MainMenu::kMaResumeGame));  // string set in MainMenuState::enter()
   main_menu.AddItem(
       MenuItem(10, 10, "", MainMenu::kMaNewGame));  // string set in MainMenuState::enter()
+#if !OPENLIERO_EMSCRIPTEN
+  // A browser cannot open the UDP sockets direct (LAN/IP) play needs.
   main_menu.AddItem(MenuItem(48, 48, "HOST LAN GAME", MainMenu::kMaHostGame));
   main_menu.AddItem(MenuItem(48, 48, "JOIN LAN GAME", MainMenu::kMaJoinGame));
+#endif
   main_menu.AddItem(MenuItem(48, 48, "HOST ONLINE", MainMenu::kMaHostOnline));
   main_menu.AddItem(MenuItem(48, 48, "JOIN ONLINE", MainMenu::kMaJoinOnline));
   main_menu.AddItem(MenuItem(48, 48, "OPTIONS (F2)", MainMenu::kMaAdvanced));
@@ -1509,6 +1505,13 @@ void Gfx::InitFrameStepping() {
   auto menu_state = std::make_unique<MainMenuState>();
   menuStatePtr_ = menu_state.get();
   state_stack.Push(std::move(menu_state), this);
+
+  // Opened from an invite link (?join=CODE): join that room right away, as if
+  // JOIN ONLINE had been picked and the code typed in.
+  if (std::string code = web_page::TakeJoinCodeFromUrl(); !code.empty()) {
+    pending_net_address = std::move(code);
+    pending_menu_selection = MainMenu::kMaJoinOnline;
+  }
 }
 
 bool Gfx::RunOneFrame() {

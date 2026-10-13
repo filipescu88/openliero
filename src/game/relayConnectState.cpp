@@ -5,11 +5,22 @@
 #include "keys.hpp"
 #include "netConnectState.hpp"
 #include "text.hpp"
+#include "webPage.hpp"
 
 #include <cstdio>
 #include <memory>
 #include <string>
 #include <utility>
+
+namespace {
+
+// "https://liero.pl/?join=ABC123" → "liero.pl/?join=ABC123" (fits the screen).
+std::string ShortLink(std::string const& link) {
+  std::string::size_type const kScheme = link.find("://");
+  return kScheme == std::string::npos ? link : link.substr(kScheme + 3);
+}
+
+}  // namespace
 
 RelayConnectState::RelayConnectState(NetSession::Role role, std::string room_code)
     : role_(role), roomCode_(std::move(room_code)) {}
@@ -50,10 +61,19 @@ bool RelayConnectState::Update() {
       if (roomCode_ != relay_.RoomCode()) {
         std::fprintf(stderr, "[relay] room %s created, waiting for peer\n",
                      relay_.RoomCode().c_str());
+        roomCode_ = relay_.RoomCode();
+        inviteLink_ = web_page::InviteLink(roomCode_);
       }
-      roomCode_ = relay_.RoomCode();
       statusLine1_ = "ROOM CODE: " + roomCode_;
       statusLine2_ = "WAITING FOR PEER...";
+      // A tap anywhere (the touch overlay sends it as ENTER + fire) or ENTER
+      // shares the invite link — WhatsApp etc. through the phone's share sheet.
+      if (!inviteLink_.empty() && (gfx->TestSdlKeyOnce(SDL_SCANCODE_RETURN) ||
+                                   gfx->TestControlOnce(WormSettingsExtensions::kFire))) {
+        shared_ = web_page::ShareInvite(roomCode_);
+        std::fprintf(stderr, "[relay] share invite %s: %s\n", roomCode_.c_str(),
+                     shared_ ? "ok" : "unavailable");
+      }
       break;
     case RelayClient::State::kPaired:
       std::fprintf(stderr, "[relay] paired in room %s\n", relay_.RoomCode().c_str());
@@ -99,6 +119,19 @@ void RelayConnectState::Draw() {
 
   int const kW2 = font.GetDims(statusLine2_);
   font.DrawString(gfx->play_renderer.bmp, statusLine2_, kCx - kW2 / 2, kCy + 14, 7);
+
+  if (!inviteLink_.empty() && relay_.GetState() == RelayClient::State::kWaitingForPeer) {
+    std::string const kHint =
+        shared_ ? "LINK SENT - TAP TO SHARE AGAIN" : "TAP (OR ENTER) TO SHARE AN INVITE LINK";
+    int const kWh = font.GetDims(kHint);
+    font.DrawString(gfx->play_renderer.bmp, kHint, kCx - kWh / 2, kCy + 40, 45);
+    // The link itself only when it fits (a long ?relay= test URL does not).
+    std::string const kShown = ShortLink(inviteLink_);
+    int const kLinkW = font.GetDims(kShown);
+    if (kLinkW <= 310) {
+      font.DrawString(gfx->play_renderer.bmp, kShown, kCx - kLinkW / 2, kCy + 54, 7);
+    }
+  }
 
   std::string const kEsc = cancel_ ? "PRESS ESC TO RETURN" : "PRESS ESC TO CANCEL";
   int const kWe = font.GetDims(kEsc);
