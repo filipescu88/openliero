@@ -13,6 +13,15 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/tools/cmake")
 include(GenerateVersion) # generate version metadata from git
 include(GNUInstallDirs)
 
+# POPRAWKA PORTU WASM: Emscripten domyślnie kompiluje kod BEZ obsługi wyjątków C++
+# (DISABLE_EXCEPTION_CATCHING=1), więc każdy `throw` kończy się `abort()` („Aborted(undefined)”).
+# Gra rzuca i łapie std::exception m.in. w ścieżce startowej, przez co stockowy build wasm nie startuje
+# w przeglądarce wcale. Włączamy wyjątki C++ dla buildów wasm32-emscripten.
+if(EMSCRIPTEN)
+  add_compile_options(-fexceptions)
+  add_link_options(-fexceptions)
+endif()
+
 # configure vcpkg
 if(OPENLIERO_USE_VCPKG)
   # For Emscripten builds, find and set the chainload toolchain before vcpkg
