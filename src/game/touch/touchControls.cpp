@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <numbers>
 #include <string>
 #include <utility>
 
@@ -17,14 +18,18 @@
 namespace {
 
 // Kolory nakładki (ARGB, niezależne od palety gry) — spójne z makietą F3.
+// Prefiks kCol, nie kBtn: w metodach TouchControls nazwa kBtnFire oznacza indeks
+// przycisku z enuma klasy (0), więc kolory o tych nazwach wychodziły przezroczyste.
 constexpr uint32_t kZoneFill = 0x18FFFFFF;
 constexpr uint32_t kZoneRing = 0x70FFFFFF;
 constexpr uint32_t kZoneRingHot = 0xC0FFD166;
 constexpr uint32_t kKnob = 0xCCFFC64D;
-constexpr uint32_t kBtnFire = 0x77E5484D;
-constexpr uint32_t kBtnJump = 0x7756D364;
-constexpr uint32_t kBtnRope = 0x77FFB300;
-constexpr uint32_t kBtnChange = 0x775B8DEF;
+constexpr uint32_t kColFire = 0x77E5484D;
+constexpr uint32_t kColJump = 0x7756D364;
+constexpr uint32_t kColRope = 0x77FFB300;
+constexpr uint32_t kColChange = 0x775B8DEF;
+constexpr uint32_t kColDig = 0x77A0703C;
+constexpr uint32_t kColMenu = 0xFF444444;
 
 // Martwa strefa drążka jest okrągła i z histerezą: kierunek „łapie” dopiero po
 // wyjściu poza kStickEngage, a puszcza dopiero po powrocie poniżej kStickRelease.
@@ -38,9 +43,11 @@ constexpr float kStickRelease = 0.12F;
 // (histereza na granicy sektorów). Wartości to cosinusy tych kątów.
 constexpr float kConeEnter = 0.3827F;     // cos(67,5°)
 constexpr float kConeHold = 0.2588F;      // cos(75°)
-constexpr float kAutoFire = 0.55F;        // wychylenie prawego drążka = auto-ogień
-constexpr float kTurnThresh = 0.60F;      // wychylenie X prawego drążka = obrót
 constexpr float kStickZoneScale = 1.25F;  // strefa chwytu drążka (× promień)
+// LINA = rzut liny, czyli w Liero BRON trzymana + SKOK wciśnięty (Worm::ProcessTasks).
+// Jednym kciukiem tego nie zrobisz, więc przycisk wciska oba na kilka klatek.
+// Krótko, bo trzymana BRON blokuje chodzenie (Worm::Process → ProcessWeaponChange).
+constexpr int kRopePulseFrames = 3;
 // Autopowtarzanie trzymanego kierunku w menu — jak klawiatura (SDL key repeat):
 // pierwszy krok od razu, kolejne po opóźnieniu, potem w stałym rytmie.
 constexpr uint64_t kRepeatDelayMs = 350;
@@ -142,36 +149,41 @@ void TouchControls::RecomputeLayout(Gfx& gfx) {
   float const kMargin = std::max(6.0F, kMin * 0.03F);
   float const kStickR = std::clamp(kMin * 0.20F, 34.0F, 110.0F);
   float const kBtnR = std::clamp(kMin * 0.10F, 20.0F, 46.0F);
-  float const kStepY = kBtnR * 1.85F;          // odstęp między krążkami w kolumnie
-  float const kGap = kBtnR * 0.55F;            // odstęp drążka od kolumny przycisków
+  float const kStepY = kBtnR * 1.85F;  // odstęp między krążkami w kolumnie
+  float const kGap = kBtnR * 0.55F;    // odstęp drążka od kolumny przycisków
 
-  // Lewy drążek: ruch + celowanie (odpowiednik strzałek).
-  sticks_[0].base_x = kMargin + kStickR;
-  sticks_[0].base_y = static_cast<float>(h) - kMargin - kStickR;
-  // Prawy drążek: celowanie + auto-ogień — na lewo od kolumny przycisków.
-  sticks_[1].base_x = static_cast<float>(w) - kMargin - (kBtnR * 2.0F) - kGap - kStickR;
-  sticks_[1].base_y = static_cast<float>(h) - kMargin - kStickR;
+  // Drążek (lewy kciuk): ruch + celowanie (odpowiednik strzałek).
+  stick_.base_x = kMargin + kStickR;
+  stick_.base_y = static_cast<float>(h) - kMargin - kStickR;
 
-  // Kolumna przycisków przy prawej krawędzi: OGIEN (dół) → SKOK → LINA → BRON → MENU.
-  float const kColX = static_cast<float>(w) - kMargin - kBtnR;
-  float y = static_cast<float>(h) - kMargin - kBtnR;
-  buttons_[kBtnFire] = {kColX, y, kBtnR, false, 0};
-  y -= kStepY;
-  buttons_[kBtnJump] = {kColX, y, kBtnR * 0.85F, false, 0};
-  y -= kStepY;
-  buttons_[kBtnRope] = {kColX, y, kBtnR * 0.80F, false, 0};
-  y -= kStepY;
-  buttons_[kBtnChange] = {kColX, y, kBtnR * 0.80F, false, 0};
-  y -= kStepY;
-  buttons_[kBtnMenu] = {kColX, y, kBtnR * 0.70F, false, 0};
+  // Prawy kciuk: duży OGIEN w rogu, reszta w łuku wokół niego (od dołu-lewej do
+  // góry): SKOK, LINA, BRON — każdy w tej samej odległości od OGIEN, więc kciuk
+  // oparty na ogniu sięga wszystkich. KOP nad BRON, MENU osobno w rogu ekranu.
+  float const kFireR = kBtnR * 1.25F;
+  float const kFireX = static_cast<float>(w) - kMargin - kFireR;
+  float const kFireY = static_cast<float>(h) - kMargin - kFireR;
+  buttons_[kBtnFire] = {.x = kFireX, .y = kFireY, .r = kFireR};
+  float const kArc = kFireR + (kBtnR * 1.70F);  // odległość środków od OGIEN
+  auto const kOnArc = [&](float deg, float r) {
+    float const kRad = deg * std::numbers::pi_v<float> / 180.0F;
+    return Button{
+        .x = kFireX + (std::cos(kRad) * kArc), .y = kFireY - (std::sin(kRad) * kArc), .r = r};
+  };
+  buttons_[kBtnJump] = kOnArc(180.0F, kBtnR * 0.95F);
+  buttons_[kBtnRope] = kOnArc(135.0F, kBtnR * 0.90F);
+  buttons_[kBtnChange] = kOnArc(90.0F, kBtnR * 0.90F);
+  buttons_[kBtnDig] = {
+      .x = kFireX, .y = buttons_[kBtnChange].y - (kBtnR * 1.85F), .r = kBtnR * 0.80F};
+  buttons_[kBtnMenu] = {.x = static_cast<float>(w) - kMargin - (kBtnR * 0.70F),
+                        .y = kMargin + (kBtnR * 0.70F),
+                        .r = kBtnR * 0.70F};
 
-  // Cała kolumna (od góry BRONIA do dołu ekranu) to strefa przycisków. Dotyk
-  // tutaj — nawet w przerwę albo w etykietę — trafia w najbliższy przycisk.
-  // Wcześniej niecelny dotyk po prawej stronie kończył się „tapnięciem”, czyli
-  // strzałem, więc wszystkie przyciski wyglądały jak OGIEN.
-  zone_x0_ = kColX - (kBtnR * 1.55F);
+  // Strefa przycisków: prostokąt obejmujący łuk i KOP (bez MENU). Dotyk tutaj —
+  // nawet w przerwę albo w etykietę — trafia w najbliższy przycisk. Wcześniej
+  // niecelny dotyk po prawej stronie kończył się „tapnięciem”, czyli strzałem.
+  zone_x0_ = buttons_[kBtnJump].x - (buttons_[kBtnJump].r * 1.4F);
   zone_x1_ = static_cast<float>(w);
-  zone_y0_ = buttons_[kBtnMenu].y - (kBtnR * 1.10F);
+  zone_y0_ = buttons_[kBtnDig].y - (buttons_[kBtnDig].r * 1.4F);
   zone_y1_ = static_cast<float>(h);
 }
 
@@ -220,50 +232,42 @@ void TouchControls::HandleEvent(SDL_Event const& ev, Gfx& gfx) {
       }
     }
     if (best >= 0) {
-      buttons_[best].down = true;
-      buttons_[best].finger = kId;
-      if (best == kBtnMenu) {
-        // MENU = ESC, tak jak START na padzie (Gfx::DispatchGamepadInput):
-        // kontroler (LocalController::OnKey) wygasza i wraca do menu.
-        PulseKey(gfx, kDkEscape, 2);
-      }
+      PressButton(gfx, best, kId);
       return;
     }
 
-    // 2) drążki — „chwyt” w promieniu strefy. Środek drążka jest STAŁY (środek
+    // 2) drążek — „chwyt” w promieniu strefy. Środek drążka jest STAŁY (środek
     //    strefy z layoutu) — dotknięcie nie przesuwa drążka pod palec.
     float const kStickR =
         std::clamp(static_cast<float>(std::min(layout_w_, layout_h_)) * 0.20F, 34.0F, 110.0F);
-    for (int i = 0; i < 2; ++i) {
-      Stick& s = sticks_[i];
-      if (!s.active && InDisc(kX, kY, s.base_x, s.base_y, kStickR * kStickZoneScale)) {
-        s.active = true;
-        s.finger = kId;
-        s.x = kX;
-        s.y = kY;
-        return;
-      }
+    if (!stick_.active && InDisc(kX, kY, stick_.base_x, stick_.base_y, kStickR * kStickZoneScale)) {
+      stick_.active = true;
+      stick_.finger = kId;
+      stick_.x = kX;
+      stick_.y = kY;
+      return;
     }
 
-    // 3) gdziekolwiek w kolumnie przycisków → NAJBLIŻSZY przycisk (bez tapnięcia:
+    // 3) gdziekolwiek w strefie przycisków → NAJBLIŻSZY przycisk (bez tapnięcia:
     //    tapnięcie w grze to strzał, a tu chodziło właśnie o skok/linę/broń).
+    //    MENU pomijamy — wyjście z meczu tylko po trafieniu w sam przycisk.
     if ((kX >= zone_x0_) && (kX <= zone_x1_) && (kY >= zone_y0_) && (kY <= zone_y1_)) {
-      int nearest = 0;
+      int nearest = kBtnFire;
       float nearest_d = 1e9F;
       for (int i = 0; i < kBtnCount; ++i) {
+        if (i == kBtnMenu) {
+          continue;
+        }
+        // Odległość od KRAWĘDZI krążka — duży OGIEN nie „kradnie” sąsiadów.
         float const kDx = kX - buttons_[i].x;
         float const kDy = kY - buttons_[i].y;
-        float const kD = std::sqrt((kDx * kDx) + (kDy * kDy));
+        float const kD = std::sqrt((kDx * kDx) + (kDy * kDy)) - buttons_[i].r;
         if (kD < nearest_d) {
           nearest_d = kD;
           nearest = i;
         }
       }
-      buttons_[nearest].down = true;
-      buttons_[nearest].finger = kId;
-      if (nearest == kBtnMenu) {
-        PulseKey(gfx, kDkEscape, 2);
-      }
+      PressButton(gfx, nearest, kId);
       return;
     }
 
@@ -277,22 +281,24 @@ void TouchControls::HandleEvent(SDL_Event const& ev, Gfx& gfx) {
   }
 
   bool const kReleased = (ev.type != SDL_EVENT_FINGER_MOTION);
-  for (Stick& s : sticks_) {
-    if (s.active && s.finger == kId) {
-      s.x = kX;
-      s.y = kY;
-      if (kReleased) {
-        s.active = false;
-        s.finger = 0;
-      }
-      return;
+  if (stick_.active && stick_.finger == kId) {
+    stick_.x = kX;
+    stick_.y = kY;
+    if (kReleased) {
+      stick_.active = false;
+      stick_.finger = 0;
     }
+    return;
   }
   for (Button& b : buttons_) {
     if (b.down && b.finger == kId) {
       if (kReleased) {
-        b.down = false;
         b.finger = 0;
+        if (b.seen) {
+          b.down = false;
+        } else {
+          b.release_pending = true;  // gra jeszcze nie widziała wciśnięcia
+        }
       }
       return;
     }
@@ -317,6 +323,22 @@ void TouchControls::HandleEvent(SDL_Event const& ev, Gfx& gfx) {
       }
       tap_pending_ = false;
     }
+  }
+}
+
+void TouchControls::PressButton(Gfx& gfx, int index, SDL_FingerID finger) {
+  Button& b = buttons_.at(static_cast<std::size_t>(index));
+  b.down = true;
+  b.finger = finger;
+  b.seen = false;
+  b.release_pending = false;
+  if (index == kBtnMenu) {
+    // MENU = ESC, tak jak START na padzie (Gfx::DispatchGamepadInput):
+    // kontroler (LocalController::OnKey) wygasza i wraca do menu.
+    PulseKey(gfx, kDkEscape, 2);
+  } else if (index == kBtnRope) {
+    PulseKey(gfx, ActionKeyCode(gfx, WormSettings::kChange), kRopePulseFrames);
+    PulseKey(gfx, ActionKeyCode(gfx, WormSettings::kJump), kRopePulseFrames);
   }
 }
 
@@ -425,10 +447,13 @@ void TouchControls::Apply(Gfx& gfx, uint64_t now_ms) {
   // 1) impulsy (tap = ENTER+kFire, impulsy kierunkowe dla menu): klawisz został
   //    ustawiony w PulseKey i NIE jest odtwarzany — tu tylko odliczamy czas trwania
   //    i zwalniamy (żeby nie zostawić klawisza wciśniętego ani w kontrolerze).
+  uint32_t const kChangeCode = ActionKeyCode(gfx, WormSettings::kChange);
+  bool change_pulse_ended = false;
   for (uint32_t k = 0; k < kMaxDosKey; ++k) {
     if (pulse_frames_[k] > 0) {
       wanted_dos_[k] = true;
       if (--pulse_frames_[k] == 0) {
+        change_pulse_ended = change_pulse_ended || (k == kChangeCode);
         if (gfx.controller) {
           gfx.controller->OnKey(k, /*state=*/false);
         }
@@ -439,49 +464,59 @@ void TouchControls::Apply(Gfx& gfx, uint64_t now_ms) {
     }
   }
 
-  // 2) drążki → kierunki (ruch + celowanie) i auto-ogień
+  // Krótkie tapnięcia: palec puścił, zanim gra zobaczyła przycisk — był wciśnięty
+  // przez poprzednią klatkę, więc teraz można go puścić.
+  for (Button& b : buttons_) {
+    if (b.release_pending && b.seen) {
+      b.down = false;
+      b.release_pending = false;
+    }
+  }
+
+  // 2) drążek → 8 kierunków (ruch + celowanie)
   float const kStickR =
       std::clamp(static_cast<float>(std::min(layout_w_, layout_h_)) * 0.20F, 34.0F, 110.0F);
-  auto const kAxis = [&](Stick const& s) {
-    return std::pair<float, float>{ClampUnit((s.x - s.base_x) / kStickR),
-                                   ClampUnit((s.y - s.base_y) / kStickR)};
-  };
-  Stick const& kMove = sticks_[0];
-  Stick const& kAim = sticks_[1];
-  auto const kMoveAx = kAxis(kMove);
-  auto const kAimAx = kAxis(kAim);
-
-  // Lewy drążek: 8 kierunków (ruch + celowanie). Prawy: góra/dół z tych samych
-  // sektorów, obrót dopiero przy mocnym wychyleniu w bok.
-  std::array<bool, kDirCount> move_dirs{};
-  if (kMove.active) {
-    move_dirs = StickDirs(kMoveAx.first, kMoveAx.second, stick_dirs_[0]);
-  }
-  std::array<bool, kDirCount> aim_dirs{};
-  if (kAim.active) {
-    aim_dirs = StickDirs(kAimAx.first, kAimAx.second, stick_dirs_[1]);
-    aim_dirs[kDirLeft] = kAimAx.first < -kTurnThresh;
-    aim_dirs[kDirRight] = kAimAx.first > kTurnThresh;
-  }
-  stick_dirs_[0] = move_dirs;
-  stick_dirs_[1] = aim_dirs;
-
   std::array<bool, kDirCount> dirs{};
-  for (std::size_t d = 0; d < kDirCount; ++d) {
-    dirs.at(d) = move_dirs.at(d) || aim_dirs.at(d);
+  if (stick_.active) {
+    dirs = StickDirs(ClampUnit((stick_.x - stick_.base_x) / kStickR),
+                     ClampUnit((stick_.y - stick_.base_y) / kStickR), stick_dirs_);
   }
-  bool const kAutoFire = kAim.active && ((std::fabs(kAimAx.first) > kAutoFire) ||
-                                         (std::fabs(kAimAx.second) > kAutoFire));
+  stick_dirs_ = dirs;
+
+  // KOP: klawisz kopania gracza; gdy go nie ma (stare profile mają 0), kopanie
+  // to po prostu lewo+prawo naraz — tak samo kopie się na klawiaturze.
+  bool const kDigKeyBound = ActionKeyCode(gfx, WormSettings::kDig) != 0;
+  if (buttons_[kBtnDig].down && !kDigKeyBound) {
+    dirs[kDirLeft] = true;
+    dirs[kDirRight] = true;
+  }
 
   constexpr std::array<int, kDirCount> kDirControls = {WormSettings::kLeft, WormSettings::kRight,
                                                        WormSettings::kUp, WormSettings::kDown};
   for (std::size_t d = 0; d < kDirCount; ++d) {
     SetActionKey(gfx, kDirControls.at(d), dirs.at(d));
   }
-  SetActionKey(gfx, WormSettings::kFire, buttons_[kBtnFire].down || kAutoFire);
+  SetActionKey(gfx, WormSettings::kFire, buttons_[kBtnFire].down);
   SetActionKey(gfx, WormSettings::kJump, buttons_[kBtnJump].down);
-  SetActionKey(gfx, WormSettings::kDig, buttons_[kBtnRope].down);
+  SetActionKey(gfx, WormSettings::kDig, buttons_[kBtnDig].down && kDigKeyBound);
   SetActionKey(gfx, WormSettings::kChange, buttons_[kBtnChange].down);
+
+  // Po rzucie liny: trzymana BRON zdjęła robakowi lewo/prawo (ProcessWeaponChange
+  // robi Release), a palec dalej trzyma drążek. Przypominamy kontrolerowi o
+  // trzymanych kierunkach, żeby po rzucie dało się od razu bujać/chodzić.
+  if (change_pulse_ended && !buttons_[kBtnChange].down && gfx.controller) {
+    for (std::size_t d = kDirLeft; d <= kDirRight; ++d) {
+      uint32_t const kCode = ActionKeyCode(gfx, kDirControls.at(d));
+      if (dirs.at(d) && kCode != 0 && KeyHeldByTouch(kCode)) {
+        gfx.controller->OnKey(static_cast<int>(kCode), /*state=*/true);
+      }
+    }
+  }
+
+  // Gra zobaczyła w tej klatce wszystko, co jest wciśnięte.
+  for (Button& b : buttons_) {
+    b.seen = b.down;
+  }
 
   // 3) autopowtarzanie kierunków w menu. Menu czytają strzałki jednorazowo
   //    (TestControlOnce), więc trzymany drążek dawał tylko JEDEN krok — trzeba było
@@ -576,23 +611,19 @@ void TouchControls::DrawOverlay(SDL_Surface& surface, Gfx& gfx) {
   float const kStickR =
       std::clamp(static_cast<float>(std::min(layout_w_, layout_h_)) * 0.20F, 34.0F, 110.0F);
 
-  // Drążki: podstawa + gałka (gałka idzie za palcem, przycięta do promienia).
-  for (int i = 0; i < 2; ++i) {
-    Stick const& s = sticks_[i];
-    float const kCx = s.active ? s.base_x : s.base_x;
-    float const kCy = s.active ? s.base_y : s.base_y;
-    DrawDisc(surface, kCx, kCy, kStickR, kZoneFill, 1.0F, s.active ? kZoneRingHot : kZoneRing,
-             s.active ? 0.85F : 0.45F);
-    if (s.active) {
-      float kDx = s.x - s.base_x;
-      float kDy = s.y - s.base_y;
-      float const kLen = std::sqrt(kDx * kDx + kDy * kDy);
-      if (kLen > kStickR) {
-        kDx = kDx / kLen * kStickR;
-        kDy = kDy / kLen * kStickR;
-      }
-      DrawDisc(surface, kCx + kDx, kCy + kDy, kStickR * 0.42F, kKnob, 1.0F, 0x33FFFFFF, 0.5F);
+  // Drążek: podstawa + gałka (gałka idzie za palcem, przycięta do promienia).
+  Stick const& s = stick_;
+  DrawDisc(surface, s.base_x, s.base_y, kStickR, kZoneFill, 1.0F,
+           s.active ? kZoneRingHot : kZoneRing, s.active ? 0.85F : 0.45F);
+  if (s.active) {
+    float dx = s.x - s.base_x;
+    float dy = s.y - s.base_y;
+    float const kLen = std::sqrt(dx * dx + dy * dy);
+    if (kLen > kStickR) {
+      dx = dx / kLen * kStickR;
+      dy = dy / kLen * kStickR;
     }
+    DrawDisc(surface, s.base_x + dx, s.base_y + dy, kStickR * 0.42F, kKnob, 1.0F, 0x33FFFFFF, 0.5F);
   }
 
   // Przyciski akcji.
@@ -600,16 +631,14 @@ void TouchControls::DrawOverlay(SDL_Surface& surface, Gfx& gfx) {
     uint32_t color;
     char const* label;
   };
-  BtnStyle const kStyles[kBtnCount] = {{.color = kBtnFire, .label = "OGIEN"},
-                                       {.color = kBtnJump, .label = "SKOK"},
-                                       {.color = kBtnRope, .label = "LINA"},
-                                       {.color = kBtnChange, .label = "BRON"},
-                                       {.color = 0xFF444444, .label = "MENU"}};
+  BtnStyle const kStyles[kBtnCount] = {
+      {.color = kColFire, .label = "OGIEN"}, {.color = kColJump, .label = "SKOK"},
+      {.color = kColRope, .label = "LINA"},  {.color = kColChange, .label = "BRON"},
+      {.color = kColDig, .label = "KOP"},    {.color = kColMenu, .label = "MENU"}};
   for (int i = 0; i < kBtnCount; ++i) {
     Button const& b = buttons_[i];
     DrawDisc(surface, b.x, b.y, b.r, kStyles[i].color, b.down ? 1.0F : 0.75F, 0xAAFFFFFF,
              b.down ? 1.0F : 0.55F);
     DrawLabel(surface, gfx, kStyles[i].label, b.x, b.y);
   }
-
 }
