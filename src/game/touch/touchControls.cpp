@@ -26,16 +26,51 @@ constexpr uint32_t kBtnJump = 0x7756D364;
 constexpr uint32_t kBtnRope = 0x77FFB300;
 constexpr uint32_t kBtnChange = 0x775B8DEF;
 
-constexpr float kStickDead = 0.15F;   // martwa strefa drążka (15% — jak w makiecie)
-constexpr float kAutoFire = 0.55F;    // wychylenie prawego drążka = auto-ogień
-constexpr float kTurnThresh = 0.60F;  // wychylenie X prawego drążka = obrót
+// Martwa strefa drążka jest okrągła i z histerezą: kierunek „łapie” dopiero po
+// wyjściu poza kStickEngage, a puszcza dopiero po powrocie poniżej kStickRelease.
+// Pojedynczy próg sprawiał, że palec trzymany przy granicy strefy na zmianę
+// wciskał i puszczał klawisz.
+constexpr float kStickEngage = 0.20F;
+constexpr float kStickRelease = 0.12F;
+// Sektory kierunków jak na krzyżaku (8 kierunków): kierunek jest wciśnięty, gdy
+// wychylenie leży w stożku ±67,5° wokół jego osi — czyli „czysta” góra to ±22,5°,
+// a skosy łączą dwa kierunki. Trzymany kierunek puszcza dopiero poza ±75°
+// (histereza na granicy sektorów). Wartości to cosinusy tych kątów.
+constexpr float kConeEnter = 0.3827F;     // cos(67,5°)
+constexpr float kConeHold = 0.2588F;      // cos(75°)
+constexpr float kAutoFire = 0.55F;        // wychylenie prawego drążka = auto-ogień
+constexpr float kTurnThresh = 0.60F;      // wychylenie X prawego drążka = obrót
 constexpr float kStickZoneScale = 1.25F;  // strefa chwytu drążka (× promień)
+// Autopowtarzanie trzymanego kierunku w menu — jak klawiatura (SDL key repeat):
+// pierwszy krok od razu, kolejne po opóźnieniu, potem w stałym rytmie.
+constexpr uint64_t kRepeatDelayMs = 350;
+constexpr uint64_t kRepeatIntervalMs = 90;
+
+// Indeksy kierunków w tablicach drążka.
+enum StickDir { kDirLeft = 0, kDirRight, kDirUp, kDirDown, kDirCount };
+
+// Wychylenie drążka (osie -1..1) → wciśnięte kierunki, z histerezą względem `prev`.
+std::array<bool, kDirCount> StickDirs(float ax, float ay, std::array<bool, kDirCount> const& prev) {
+  std::array<bool, kDirCount> out{};
+  float const kR = std::sqrt((ax * ax) + (ay * ay));
+  bool const kWasHeld = std::ranges::any_of(prev, [](bool b) { return b; });
+  if (kR < (kWasHeld ? kStickRelease : kStickEngage)) {
+    return out;
+  }
+  // Rzut kierunku wychylenia na oś danego kierunku (cos kąta między nimi).
+  std::array<float, kDirCount> const kCos = {-ax / kR, ax / kR, -ay / kR, ay / kR};
+  for (std::size_t d = 0; d < kDirCount; ++d) {
+    out.at(d) = kCos.at(d) > (prev.at(d) ? kConeHold : kConeEnter);
+  }
+  return out;
+}
 
 inline void BlendPixel(SDL_Surface& s, int x, int y, uint32_t argb, float a) {
   if (x < 0 || y < 0 || x >= s.w || y >= s.h || a <= 0.0F) {
     return;
   }
-  uint32_t* const kRow = static_cast<uint32_t*>(s.pixels) + (static_cast<std::size_t>(y) * (s.pitch / 4U));
+  uint32_t* const kRow =
+      static_cast<uint32_t*>(s.pixels) + (static_cast<std::size_t>(y) * (s.pitch / 4U));
   uint32_t const kSrc = argb;
   uint32_t const kDst = kRow[x];
   auto const kMix = [&](int shift) {
@@ -181,8 +216,8 @@ void TouchControls::HandleEvent(SDL_Event const& ev, Gfx& gfx) {
 
     // 2) drążki — „chwyt” w promieniu strefy. Środek drążka jest STAŁY (środek
     //    strefy z layoutu) — dotknięcie nie przesuwa drążka pod palec.
-    float const kStickR = std::clamp(static_cast<float>(std::min(layout_w_, layout_h_)) * 0.20F, 34.0F,
-                                     110.0F);
+    float const kStickR =
+        std::clamp(static_cast<float>(std::min(layout_w_, layout_h_)) * 0.20F, 34.0F, 110.0F);
     for (int i = 0; i < 2; ++i) {
       Stick& s = sticks_[i];
       if (!s.active && InDisc(kX, kY, s.base_x, s.base_y, kStickR * kStickZoneScale)) {
@@ -338,7 +373,9 @@ bool TouchControls::KeyHeldByTouch(uint32_t code) const {
   return owned_dos_[code];
 }
 
-void TouchControls::Apply(Gfx& gfx) {
+void TouchControls::Apply(Gfx& gfx) { Apply(gfx, SDL_GetTicks()); }
+
+void TouchControls::Apply(Gfx& gfx, uint64_t now_ms) {
   if (!enabled_) {
     return;
   }
@@ -376,37 +413,68 @@ void TouchControls::Apply(Gfx& gfx) {
   auto const kMoveAx = kAxis(kMove);
   auto const kAimAx = kAxis(kAim);
 
-  bool left = false;
-  bool right = false;
-  bool up = false;
-  bool down = false;
+  // Lewy drążek: 8 kierunków (ruch + celowanie). Prawy: góra/dół z tych samych
+  // sektorów, obrót dopiero przy mocnym wychyleniu w bok.
+  std::array<bool, kDirCount> move_dirs{};
   if (kMove.active) {
-    if (kMoveAx.first < -kStickDead) { left = true; }
-    if (kMoveAx.first > kStickDead) { right = true; }
-    if (kMoveAx.second < -kStickDead) { up = true; }
-    if (kMoveAx.second > kStickDead) { down = true; }
+    move_dirs = StickDirs(kMoveAx.first, kMoveAx.second, stick_dirs_[0]);
   }
+  std::array<bool, kDirCount> aim_dirs{};
   if (kAim.active) {
-    if (kAimAx.second < -kStickDead) { up = true; }
-    if (kAimAx.second > kStickDead) { down = true; }
-    if (kAimAx.first < -kTurnThresh) { left = true; }
-    if (kAimAx.first > kTurnThresh) { right = true; }
+    aim_dirs = StickDirs(kAimAx.first, kAimAx.second, stick_dirs_[1]);
+    aim_dirs[kDirLeft] = kAimAx.first < -kTurnThresh;
+    aim_dirs[kDirRight] = kAimAx.first > kTurnThresh;
   }
-  bool const kAutoFire =
-      kAim.active && ((std::fabs(kAimAx.first) > kAutoFire) || (std::fabs(kAimAx.second) > kAutoFire));
+  stick_dirs_[0] = move_dirs;
+  stick_dirs_[1] = aim_dirs;
 
-  SetActionKey(gfx, WormSettings::kLeft, left);
-  SetActionKey(gfx, WormSettings::kRight, right);
-  SetActionKey(gfx, WormSettings::kUp, up);
-  SetActionKey(gfx, WormSettings::kDown, down);
+  std::array<bool, kDirCount> dirs{};
+  for (std::size_t d = 0; d < kDirCount; ++d) {
+    dirs.at(d) = move_dirs.at(d) || aim_dirs.at(d);
+  }
+  bool const kAutoFire = kAim.active && ((std::fabs(kAimAx.first) > kAutoFire) ||
+                                         (std::fabs(kAimAx.second) > kAutoFire));
+
+  constexpr std::array<int, kDirCount> kDirControls = {WormSettings::kLeft, WormSettings::kRight,
+                                                       WormSettings::kUp, WormSettings::kDown};
+  for (std::size_t d = 0; d < kDirCount; ++d) {
+    SetActionKey(gfx, kDirControls.at(d), dirs.at(d));
+  }
   SetActionKey(gfx, WormSettings::kFire, buttons_[kBtnFire].down || kAutoFire);
   SetActionKey(gfx, WormSettings::kJump, buttons_[kBtnJump].down);
   SetActionKey(gfx, WormSettings::kDig, buttons_[kBtnRope].down);
   SetActionKey(gfx, WormSettings::kChange, buttons_[kBtnChange].down);
 
-  // 3) (usunięte) impulsy strzałek dla menu: powodowały podwójne kroki, bo menu
-  //    konsumują już samo naciśnięcie klawisza kierunku (TestControlOnce). Jedno
-  //    wychylenie drążka = jedno naciśnięcie klawisza, jak na klawiaturze.
+  // 3) autopowtarzanie kierunków w menu. Menu czytają strzałki jednorazowo
+  //    (TestControlOnce), więc trzymany drążek dawał tylko JEDEN krok — trzeba było
+  //    wracać do środka po każdy następny. Klawiatura ma tu systemowe powtarzanie
+  //    (zdarzenia `repeat` ponownie ustawiają gfx.dos_keys, bez OnKey) — robimy to
+  //    samo. Kontrolera nie powiadamiamy: robak trzyma stan z pierwszego OnKey,
+  //    a ekran wyboru broni ma własne powtarzanie (LocalController::Process).
+  for (std::size_t d = 0; d < kDirCount; ++d) {
+    uint64_t& repeat_at = repeat_at_ms_.at(d);
+    if (!dirs.at(d)) {
+      repeat_at = 0;
+      continue;
+    }
+    if (repeat_at == 0) {
+      repeat_at = now_ms + kRepeatDelayMs;  // pierwszy krok dało samo wciśnięcie
+      continue;
+    }
+    if (now_ms < repeat_at) {
+      continue;
+    }
+    repeat_at = now_ms + kRepeatIntervalMs;
+    uint32_t const kCode = ActionKeyCode(gfx, kDirControls.at(d));
+    if (kCode == 0 || !KeyHeldByTouch(kCode)) {
+      continue;
+    }
+    if (kCode < kMaxDosKey) {
+      gfx.dos_keys[kCode] = true;
+    } else {
+      gfx.ex_keys[kCode] = true;
+    }
+  }
 
   // 4) zwolnij to, co nakładka trzymała, a czego już nie chce (pulsy i „chciane” zostają)
   for (uint32_t k = 0; k < kMaxDosKey; ++k) {
@@ -475,8 +543,8 @@ void TouchControls::DrawOverlay(SDL_Surface& surface, Gfx& gfx) {
     Stick const& s = sticks_[i];
     float const kCx = s.active ? s.base_x : s.base_x;
     float const kCy = s.active ? s.base_y : s.base_y;
-    DrawDisc(surface, kCx, kCy, kStickR, kZoneFill, 1.0F,
-             s.active ? kZoneRingHot : kZoneRing, s.active ? 0.85F : 0.45F);
+    DrawDisc(surface, kCx, kCy, kStickR, kZoneFill, 1.0F, s.active ? kZoneRingHot : kZoneRing,
+             s.active ? 0.85F : 0.45F);
     if (s.active) {
       float kDx = s.x - s.base_x;
       float kDy = s.y - s.base_y;
@@ -494,14 +562,14 @@ void TouchControls::DrawOverlay(SDL_Surface& surface, Gfx& gfx) {
     uint32_t color;
     char const* label;
   };
-  BtnStyle const kStyles[kBtnCount] = {{kBtnFire, "OGIEN"},
-                                       {kBtnJump, "SKOK"},
-                                       {kBtnRope, "LINA"},
-                                       {kBtnChange, "BRON"}};
+  BtnStyle const kStyles[kBtnCount] = {{.color = kBtnFire, .label = "OGIEN"},
+                                       {.color = kBtnJump, .label = "SKOK"},
+                                       {.color = kBtnRope, .label = "LINA"},
+                                       {.color = kBtnChange, .label = "BRON"}};
   for (int i = 0; i < kBtnCount; ++i) {
     Button const& b = buttons_[i];
-    DrawDisc(surface, b.x, b.y, b.r, kStyles[i].color, b.down ? 1.0F : 0.75F,
-             0xAAFFFFFF, b.down ? 1.0F : 0.55F);
+    DrawDisc(surface, b.x, b.y, b.r, kStyles[i].color, b.down ? 1.0F : 0.75F, 0xAAFFFFFF,
+             b.down ? 1.0F : 0.55F);
     DrawLabel(surface, gfx, kStyles[i].label, b.x, b.y);
   }
 }
