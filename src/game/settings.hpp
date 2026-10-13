@@ -21,7 +21,7 @@ struct GameplayExtensions {
   int32_t ai_parallels{3};
 
   int32_t zone_timeout{30};
-  uint32_t select_bot_weapons{true};
+  uint32_t select_bot_weapons{false};
 
   bool allow_viewing_spawn_point{false};
   std::string tc;

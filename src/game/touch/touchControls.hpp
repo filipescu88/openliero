@@ -95,12 +95,8 @@ struct TouchControls {
   // sprzątanie na końcu Apply nie zwalniało klawiszy właśnie wciśniętych.
   std::array<bool, kMaxDosKey> wanted_dos_{};
   std::unordered_set<uint32_t> wanted_ex_{};
-  // Ile klatek trwać ma jeszcze blokada kolejnego impulsu kierunkowego (menu).
-  int nudge_cooldown_ = 0;
-  // Ile klatek trzymać klawisz-impuls (menu/tap); indeks = kod DOS.
+  // Ile klatek trzymać klawisz-impuls (tap/menu) zanim go zwolnic; indeks = kod DOS.
   std::array<int, kMaxDosKey> pulse_frames_{};
-  // Czy oś drążka wróciła do środka (uzbrojona do następnego impulsu kierunkowego).
-  std::array<std::array<bool, 2>, 2> nudge_armed_{};
 
   // Potencjalne tapnięcie poza strefami (potwierdzenie w menu).
   bool tap_pending_ = false;

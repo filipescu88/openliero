@@ -211,8 +211,6 @@ void TouchControls::HandleEvent(SDL_Event const& ev, Gfx& gfx) {
       if (kReleased) {
         s.active = false;
         s.finger = 0;
-        nudge_armed_.at(static_cast<std::size_t>(&s - sticks_.data())).at(0) = true;
-        nudge_armed_.at(static_cast<std::size_t>(&s - sticks_.data())).at(1) = true;
       }
       return;
     }
@@ -255,12 +253,17 @@ void TouchControls::PulseKey(Gfx& gfx, uint32_t code, int frames) {
   }
   std::fprintf(stderr, "[touch] pulse key=%u frames=%d\n", code, frames);
   pulse_frames_[code] = std::max(pulse_frames_[code], frames);
-  // Klawiatura w ProcessEvent woła też controller->OnKey — ekran wyboru broni i
-  // inne stany sterowane kontrolerem (nie samym gfx.dos_keys) potrzebują tego
-  // samego powiadomienia, inaczej dotyk nie ruszy ich wcale. Powiadamiamy tylko,
-  // gdy klawisz nie jest już trzymany (inaczej sztuczna krawędź = dodatkowy krok menu).
-  if (!owned_dos_[code] && gfx.controller) {
-    gfx.controller->OnKey(code, /*state=*/true);
+  // Impuls działa jak jedno naciśnięcie klawisza: ustawiamy klawisz TERAZ (ta klatka
+  // jest widoczna dla TestKeyOnce/TestControlOnce w Update), a nie odtwarzamy go przez
+  // kolejne klatki — inaczej jedno wychylenie drążka dawałoby kilka kroków w menu.
+  gfx.dos_keys[code] = true;
+  if (!owned_dos_[code]) {
+    // Klawiatura w ProcessEvent woła też controller->OnKey — ekran wyboru broni i
+    // inne stany sterowane kontrolerem (nie samym gfx.dos_keys) potrzebują tego
+    // samego powiadomienia, inaczej dotyk nie ruszy ich wcale.
+    if (gfx.controller) {
+      gfx.controller->OnKey(code, /*state=*/true);
+    }
   }
   owned_dos_[code] = true;
 }
@@ -287,14 +290,20 @@ void TouchControls::SetActionKey(Gfx& gfx, int control, bool down) {
       // (ClearKeys), więc „czy już wciśnięty” sprawdzamy w owned_dos_, a nie w gfx.
       // Powiadamiamy kontroler tylko o ZMIANIE — inaczej każde odtworzenie klawisza
       // po ClearKeys dawałoby nową krawędź i menu przewijałoby się co klatkę.
+      //
+      // UWAGA: klawisza NIE odtwarzamy w gfx.dos_keys co klatkę. Menu czytają go
+      // przez TestKeyOnce/TestControlOnce (destrukcyjnie — „zużywają” naciśnięcie),
+      // więc odtwarzanie = nowe naciśnięcie w każdej klatce = menu leci jak szalone.
+      // Ruch/akcje w grze nie cierpią: kontroler dostaje zdarzenia OnKey i trzyma
+      // stan robaka (LocalController::OnKey → worm->SetControlState).
       if (!owned_dos_[kCode]) {
         std::fprintf(stderr, "[touch] control=%d key=%u DOWN\n", control, kCode);
         owned_dos_[kCode] = true;
+        gfx.dos_keys[kCode] = true;
         if (gfx.controller) {
           gfx.controller->OnKey(kCode, /*state=*/true);
         }
       }
-      gfx.dos_keys[kCode] = true;
       wanted_dos_[kCode] = true;
     } else if (owned_dos_[kCode] && (pulse_frames_[kCode] == 0)) {
       std::fprintf(stderr, "[touch] control=%d key=%u up\n", control, kCode);
@@ -338,16 +347,19 @@ void TouchControls::Apply(Gfx& gfx) {
     return;
   }
 
-  // 1) impulsy (tap = ENTER+kFire, impulsy kierunkowe dla menu)
+  // 1) impulsy (tap = ENTER+kFire, impulsy kierunkowe dla menu): klawisz został
+  //    ustawiony w PulseKey i NIE jest odtwarzany — tu tylko odliczamy czas trwania
+  //    i zwalniamy (żeby nie zostawić klawisza wciśniętego ani w kontrolerze).
   for (uint32_t k = 0; k < kMaxDosKey; ++k) {
     if (pulse_frames_[k] > 0) {
-      gfx.dos_keys[k] = true;
-      owned_dos_[k] = true;
+      wanted_dos_[k] = true;
       if (--pulse_frames_[k] == 0) {
-        // koniec impulsu: zgłoś zwolnienie kontrolerowi (klawisz zostanie zdjęty w kroku 4)
         if (gfx.controller) {
           gfx.controller->OnKey(k, /*state=*/false);
         }
+        owned_dos_[k] = false;
+        gfx.dos_keys[k] = false;
+        wanted_dos_[k] = false;
       }
     }
   }
@@ -392,32 +404,9 @@ void TouchControls::Apply(Gfx& gfx) {
   SetActionKey(gfx, WormSettings::kDig, buttons_[kBtnRope].down);
   SetActionKey(gfx, WormSettings::kChange, buttons_[kBtnChange].down);
 
-  // 3) impulsy kierunkowe dla menu: jedno wychylenie = jedno naciśnięcie strzałki,
-  //    ale z blokadą czasową i wymogiem powrotu osi do środka — inaczej menu
-  //    „przewijało się” kilka pozycji na sekundę (zgłoszone przez ziomka).
-  constexpr int kNudgeCooldownFrames = 20;  // ~330 ms przy 60 fps
-  if (nudge_cooldown_ > 0) {
-    --nudge_cooldown_;
-  }
-  if (kMove.active) {
-    for (int axis = 0; axis < 2; ++axis) {
-      float const kV = (axis == 0) ? kMoveAx.first : kMoveAx.second;
-      auto& armed = nudge_armed_[0].at(static_cast<std::size_t>(axis));
-      if (std::fabs(kV) < (kStickDead * 0.5F)) {
-        armed = true;  // oś wróciła do środka — można dać następny impuls
-      } else if ((std::fabs(kV) > (kStickDead * 1.4F)) && armed && (nudge_cooldown_ == 0)) {
-        SDL_Scancode sc = SDL_SCANCODE_RETURN;
-        if (axis == 0) {
-          sc = (kV < 0.0F) ? SDL_SCANCODE_LEFT : SDL_SCANCODE_RIGHT;
-        } else {
-          sc = (kV < 0.0F) ? SDL_SCANCODE_UP : SDL_SCANCODE_DOWN;
-        }
-        PulseKey(gfx, SDLToDOSKey(sc), 3);
-        armed = false;
-        nudge_cooldown_ = kNudgeCooldownFrames;
-      }
-    }
-  }
+  // 3) (usunięte) impulsy strzałek dla menu: powodowały podwójne kroki, bo menu
+  //    konsumują już samo naciśnięcie klawisza kierunku (TestControlOnce). Jedno
+  //    wychylenie drążka = jedno naciśnięcie klawisza, jak na klawiaturze.
 
   // 4) zwolnij to, co nakładka trzymała, a czego już nie chce (pulsy i „chciane” zostają)
   for (uint32_t k = 0; k < kMaxDosKey; ++k) {
@@ -463,7 +452,9 @@ void TouchControls::DrawLabel(SDL_Surface& surface, Gfx& gfx, std::string const&
       if ((kPixel & 0x00FFFFFFU) == 0U) {
         continue;
       }
-      BlendPixel(surface, kX0 + x, kY0 + y, kPixel, 0.9F);
+      // Rysujemy na biało, a nie paletą gry: ekrany (np. wybór broni) mają własne,
+      // rotowane palety, przez co napisy bywały niewidoczne.
+      BlendPixel(surface, kX0 + x, kY0 + y, 0xFFFFFFFFU, 0.85F);
     }
   }
 }
