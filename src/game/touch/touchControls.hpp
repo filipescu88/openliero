@@ -61,6 +61,8 @@ struct TouchControls {
   void HandleEvent(SDL_Event const& ev, Gfx& gfx);
   // Raz na klatkę, przed aktualizacją stanu gry: przelicza dotyk na klawisze.
   void Apply(Gfx& gfx);
+  // Jak wyżej, z jawnym czasem (ms) — do testów autopowtarzania kierunków.
+  void Apply(Gfx& gfx, uint64_t now_ms);
   // Nakładka rysowana na powierzchni okna (ARGB8888) — na wierzchu klatki gry.
   void DrawOverlay(SDL_Surface& surface, Gfx& gfx);
 
@@ -97,6 +99,14 @@ struct TouchControls {
   std::unordered_set<uint32_t> wanted_ex_{};
   // Ile klatek trzymać klawisz-impuls (tap/menu) zanim go zwolnic; indeks = kod DOS.
   std::array<int, kMaxDosKey> pulse_frames_{};
+
+  // Kierunki wychylone na drążku w poprzedniej klatce: [drążek][lewo, prawo, góra, dół].
+  // Potrzebne do histerezy — bez niej palec na granicy strefy/sektora „mruga”
+  // klawiszem (wiele naciśnięć w menu, szarpane celowanie w grze).
+  std::array<std::array<bool, 4>, 2> stick_dirs_{};
+  // Autopowtarzanie trzymanego kierunku (jak klawiatura): kiedy (ms) wcisnąć
+  // klawisz w `gfx` ponownie; 0 = kierunek nietrzymany. Indeks: lewo, prawo, góra, dół.
+  std::array<uint64_t, 4> repeat_at_ms_{};
 
   // Potencjalne tapnięcie poza strefami (potwierdzenie w menu).
   bool tap_pending_ = false;
