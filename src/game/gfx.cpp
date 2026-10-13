@@ -34,6 +34,7 @@
 #include "mainMenuState.hpp"
 #include "netConnectState.hpp"
 #include "onlineConnectState.hpp"
+#include "relayConnectState.hpp"
 
 #include "gfx/macros.hpp"
 
@@ -309,6 +310,8 @@ void Gfx::SetVideoMode() {
   // dzięki czemu współrzędne dotyku znormalizowane przez SDL pokrywają się z
   // układem nakładki. Całą resztę (pełny ekran, brak przewijania, podpowiedź
   // „obróć telefon”, log błędów) robi powłoka: src/web/shell.html.
+  // To JavaScript: clang-format rozbiłby `!==` na `!= =`.
+  // clang-format off
   EM_ASM({
     const canvas = document.querySelector('#canvas');
     if (!canvas) {
@@ -324,6 +327,7 @@ void Gfx::SetVideoMode() {
     canvas.style.imageRendering = 'pixelated';
     canvas.style.touchAction = 'none';
   });
+  // clang-format on
 #endif
   if (sdl_spectator_renderer) {
     SDL_DestroyRenderer(sdl_spectator_renderer);
@@ -1642,12 +1646,22 @@ bool Gfx::RunOneFrame() {
             std::make_unique<NetConnectState>(NetSession::kClient, std::move(addr), port), this);
         return true;
       } else if (kMenuSelection == MainMenu::kMaHostOnline) {
+#if OPENLIERO_EMSCRIPTEN
+        // Browsers have no UDP: online play goes through the site's WebSocket relay.
+        state_stack.Push(std::make_unique<RelayConnectState>(NetSession::kHost), this);
+#else
         state_stack.Push(std::make_unique<OnlineConnectState>(NetSession::kHost), this);
+#endif
         return true;
       } else if (kMenuSelection == MainMenu::kMaJoinOnline) {
         std::string code = std::move(pending_net_address);
+#if OPENLIERO_EMSCRIPTEN
+        state_stack.Push(std::make_unique<RelayConnectState>(NetSession::kClient, std::move(code)),
+                         this);
+#else
         state_stack.Push(std::make_unique<OnlineConnectState>(NetSession::kClient, std::move(code)),
                          this);
+#endif
         return true;
       }
 

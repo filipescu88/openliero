@@ -13,15 +13,6 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/tools/cmake")
 include(GenerateVersion) # generate version metadata from git
 include(GNUInstallDirs)
 
-# POPRAWKA PORTU WASM: Emscripten domyślnie kompiluje kod BEZ obsługi wyjątków C++
-# (DISABLE_EXCEPTION_CATCHING=1), więc każdy `throw` kończy się `abort()` („Aborted(undefined)”).
-# Gra rzuca i łapie std::exception m.in. w ścieżce startowej, przez co stockowy build wasm nie startuje
-# w przeglądarce wcale. Włączamy wyjątki C++ dla buildów wasm32-emscripten.
-if(EMSCRIPTEN)
-  add_compile_options(-fexceptions)
-  add_link_options(-fexceptions)
-endif()
-
 # configure vcpkg
 if(OPENLIERO_USE_VCPKG)
   # For Emscripten builds, find and set the chainload toolchain before vcpkg
@@ -69,6 +60,17 @@ project(openliero
   HOMEPAGE_URL https://github.com/openliero/openliero
   LANGUAGES C CXX
 )
+
+# POPRAWKA PORTU WASM: Emscripten domyślnie kompiluje kod BEZ obsługi wyjątków C++
+# (DISABLE_EXCEPTION_CATCHING=1), więc każdy `throw` kończy się `abort()` („Aborted(undefined)”).
+# Gra rzuca i łapie std::exception m.in. w ścieżce startowej, przez co stockowy build wasm nie startuje
+# w przeglądarce wcale. Włączamy wyjątki C++ dla buildów wasm32-emscripten.
+# Musi stać PO project(): dopiero toolchain Emscriptena (wczytywany przez project())
+# ustawia zmienną EMSCRIPTEN — przed nim ten warunek był zawsze fałszywy.
+if(EMSCRIPTEN)
+  add_compile_options(-fexceptions)
+  add_link_options(-fexceptions)
+endif()
 
 # clang-tidy integration
 #   `clang-tidy` target: runs scripts/clang-tidy-diff.sh, which is the
@@ -230,9 +232,11 @@ set(GAME_SOURCES ${SOURCES}
   src/game/net/signaling.cpp
   src/game/net/iceAgent.cpp
   src/game/net/iceBridge.cpp
+  src/game/net/relayLink.cpp
 
   src/game/netConnectState.cpp
   src/game/onlineConnectState.cpp
+  src/game/relayConnectState.cpp
   src/game/statsState.cpp
   src/game/rematchState.cpp
   src/game/menu/booleanSwitchBehavior.cpp
@@ -308,6 +312,8 @@ elseif(EMSCRIPTEN)
     -sALLOW_MEMORY_GROWTH=1
     -sMAX_WEBGL_VERSION=2
     -sEXPORTED_RUNTIME_METHODS=FS
+    # Browser WebSockets for online play through the relay (net/relayLink.cpp).
+    -lwebsocket.js
     "SHELL:--shell-file ${CMAKE_SOURCE_DIR}/src/web/shell.html"
     "SHELL:--preload-file ${CMAKE_SOURCE_DIR}/data/Profiles@/openliero/Profiles"
     "SHELL:--preload-file ${CMAKE_SOURCE_DIR}/data/Resources@/openliero/Resources"
@@ -684,6 +690,13 @@ if(OPENLIERO_BUILD_TESTS)
   target_link_libraries(test_rollback_skew_repro
     PRIVATE game Catch2::Catch2WithMain)
   catch_discover_tests(test_rollback_skew_repro
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+    DISCOVERY_MODE PRE_TEST
+  )
+
+  add_executable(test_relay_transport src/tests/test_relay_transport.cpp)
+  target_link_libraries(test_relay_transport PRIVATE game Catch2::Catch2WithMain)
+  catch_discover_tests(test_relay_transport
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
     DISCOVERY_MODE PRE_TEST
   )

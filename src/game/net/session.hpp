@@ -44,6 +44,9 @@ struct NetSession {
   bool HostWithTransport(NetTransport&& transport);
   bool ConnectWithTransport(NetTransport&& transport, const std::string& peer_addr,
                             uint16_t peer_port);
+  // Client over a transport that is already linked to the host (the
+  // WebSocket relay): nothing to dial, the connection comes up on its own.
+  bool JoinWithTransport(NetTransport&& transport);
 
   // Call once per frame from the game loop.
   // Polls network, manages state transitions.

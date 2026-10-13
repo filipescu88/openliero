@@ -42,6 +42,9 @@ void NetConnectState::Enter() {
     // Use the existing transport (from ICE bridge)
     if (role_ == NetSession::kHost) {
       ok = session->HostWithTransport(std::move(existingTransport_));
+    } else if (address_.empty()) {
+      // Already linked to the host (WebSocket relay) — nothing to dial.
+      ok = session->JoinWithTransport(std::move(existingTransport_));
     } else {
       ok = session->ConnectWithTransport(std::move(existingTransport_), address_, port_);
     }
@@ -132,7 +135,9 @@ void NetConnectState::Draw() {
   Fill(gfx->play_renderer.bmp, 0);
 
   std::string line1;
-  if (role_ == NetSession::kHost) {
+  if (hasTransport_ && address_.empty()) {
+    line1 = "ONLINE MATCH";  // linked through ICE or the relay — no port/address to show
+  } else if (role_ == NetSession::kHost) {
     line1 = "HOSTING ON PORT " + std::to_string(port_);
   } else {
     line1 = "CONNECTING TO " + address_;

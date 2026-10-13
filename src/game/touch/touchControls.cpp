@@ -367,11 +367,14 @@ uint32_t TouchControls::ActionKeyCode(Gfx& gfx, int control) const {
   if (gfx.settings == nullptr) {
     return 0;
   }
-  auto const& kWs = gfx.settings->worm_settings[0];
-  if (kWs == nullptr) {
+  // In a network match the local worm is driven by the network player's
+  // profile (RollbackController), not the left player's.
+  int const kProfile = gfx.net_session ? Settings::kNetworkPlayerIdx : 0;
+  auto const& ws = gfx.settings->worm_settings[kProfile];
+  if (ws == nullptr) {
     return 0;
   }
-  return Settings::kExtensions ? kWs->controls_ex[control] : kWs->controls[control];
+  return Settings::kExtensions ? ws->controls_ex[control] : ws->controls[control];
 }
 
 void TouchControls::SetActionKey(Gfx& gfx, int control, bool down) {

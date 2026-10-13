@@ -1,6 +1,7 @@
 #pragma once
 
 #include "iceBridge.hpp"
+#include "relayLink.hpp"
 
 #include <cstdint>
 #include <functional>
@@ -19,8 +20,8 @@ using ENetPeer = _ENetPeer;
 // NOLINTEND(bugprone-reserved-identifier, readability-identifier-naming, cert-dcl37-c, cert-dcl51-cpp)
 struct IceAgent;
 
-// Handles UDP communication between two peers using ENet.
-// Provides reliable ordered delivery of input packets.
+// Handles communication between two peers: ENet over UDP (desktop), or the
+// WebSocket relay (web build, see UseRelaySocket). Same packets either way.
 struct NetTransport {
   // Peers running a different version handshake-mismatch and disconnect
   // rather than play with mismatched packet semantics.
@@ -126,6 +127,11 @@ struct NetTransport {
   // Must be called after createHostOnBridgeSocket.
   void AttachIce(std::unique_ptr<IceBridge> bridge, std::unique_ptr<IceAgent> agent);
 
+  // Use a relay socket already paired with the peer (RelayClient) instead of
+  // ENet. The connection counts as established once the socket is open;
+  // everything is delivered reliably and in order (it is TCP underneath).
+  bool UseRelaySocket(std::unique_ptr<RelaySocket> socket);
+
   // --- General ---
   // Poll for events. Call once per frame.
   bool Poll();
@@ -190,7 +196,15 @@ struct NetTransport {
   std::function<bool(const uint8_t* data, size_t len)> on_intercepted_packet;
 
  private:
+  // How a packet travels over ENet. The relay delivers everything in order.
+  enum class Delivery { kReliable, kUnreliable, kInputBatch };
+
   void SendPacket(const void* data, size_t len);
+  void SendOnChannel(const void* data, size_t len, Delivery delivery);
+  bool HasPeer() const;
+  // Parses one received packet and fires the matching callback.
+  void DispatchPacket(const uint8_t* data, size_t len) const;
+  bool PollRelay();
   bool CreateHost(uint16_t port);
   void SetupIntercept();
 
@@ -201,4 +215,6 @@ struct NetTransport {
   enum State state_ { kDisconnected };
   std::unique_ptr<IceBridge> iceBridge_;
   std::unique_ptr<IceAgent> iceAgent_;
+  std::unique_ptr<RelaySocket> relay_;
+  bool relayConnectPending_{false};
 };

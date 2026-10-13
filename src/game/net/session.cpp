@@ -137,6 +137,20 @@ bool NetSession::ConnectWithTransport(NetTransport&& transport, const std::strin
   return true;
 }
 
+bool NetSession::JoinWithTransport(NetTransport&& transport) {
+  if (sessionState_ != kIdle) {
+    return false;
+  }
+
+  role_ = kClient;
+  gameSeed_ = 0;
+
+  transport_ = std::move(transport);
+  WireCallbacks();
+  sessionState_ = kWaitingForPeer;
+  return true;
+}
+
 void NetSession::Update() {
   ZoneScopedN("Net::Update");
   if (sessionState_ == kIdle || sessionState_ == kFailed || sessionState_ == kDisconnected) {
