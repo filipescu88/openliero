@@ -6,6 +6,7 @@
 // protocol, so this runs without a browser or network (the browser socket
 // itself is exercised end-to-end in the web build).
 
+#include <algorithm>
 #include <catch2/catch_test_macros.hpp>
 #include <cstdint>
 #include <cstdlib>
@@ -537,12 +538,7 @@ std::vector<uint8_t> WithCount(uint8_t type, uint32_t n) {
 }
 
 bool SentType(ScriptSocket const& s, uint8_t type) {
-  for (auto const& m : s.sent) {
-    if (!m.empty() && m[0] == type) {
-      return true;
-    }
-  }
-  return false;
+  return std::ranges::any_of(s.sent, [type](auto const& m) { return !m.empty() && m[0] == type; });
 }
 
 }  // namespace
@@ -716,9 +712,5 @@ TEST_CASE("ResumableRelaySocket says when it leaves and tracks the peer", "[rela
   rig.sock.reset();
   REQUIRE_FALSE(kLast->sent.empty());
   // Sent just before the socket was closed.
-  bool left = false;
-  for (auto const& m : kLast->sent) {
-    left = left || m == std::vector<uint8_t>{relay::kLeave};
-  }
-  CHECK(left);
+  CHECK(SentType(*kLast, relay::kLeave));
 }
