@@ -361,15 +361,9 @@ void RollbackController::OnKey(int key, bool key_state) {
       if (onLocalResume_) {
         onLocalResume_();
       }
-    } else if (remotePaused_ && !goingToMenu_) {
-      // Remote is paused, local Escapes — treat as a disconnect so the
-      // peer learns and tears down in lockstep instead of waiting for
-      // socket timeout.
-      if (onPeerLeft_) {
-        onPeerLeft_();
-      }
-      PeerLeft();
     } else if (!goingToMenu_) {
+      // Also while the peer has paused: leaving is the menu's DISCONNECT,
+      // never a single (easily mistaken) key press or MENU tap.
       localPaused_ = true;
       pauseMenu_.MoveToFirstVisible();
       if (onLocalPause_) {
@@ -1359,7 +1353,7 @@ void RollbackController::Draw(Renderer& renderer, bool use_spectator_viewports) 
       int const kTw = font.GetDims(kTitle);
       font.DrawString(renderer.bmp, kTitle, kCx - kTw / 2, kCy, 50);
 
-      std::string const kHint = "PRESS ESC TO DISCONNECT";
+      std::string const kHint = "PRESS ESC FOR MENU";
       int const kHw = font.GetDims(kHint);
       font.DrawString(renderer.bmp, kHint, kCx - kHw / 2, kCy + 16, 6);
     }

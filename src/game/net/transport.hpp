@@ -161,6 +161,10 @@ struct NetTransport {
   void SendTcData(const void* data, size_t len);
 
   State CurrentState() const { return state_; }
+  // Relay only: a line for the screen while either player's link is down and
+  // the relay waits for it to come back (the match is on hold meanwhile).
+  // nullptr when all is well.
+  char const* LinkNotice() const;
   uint16_t ListeningPort() const;
 
   // Access the ENet host (for STUN-via-host integration)

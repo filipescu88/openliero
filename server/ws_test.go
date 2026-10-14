@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/binary"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -225,4 +226,172 @@ func TestWSRejectsTextMessages(t *testing.T) {
 		t.Fatal(err)
 	}
 	expectType(t, wsRead(t, c), WSError)
+}
+
+func testToken(b byte) []byte { return bytes.Repeat([]byte{b}, WSTokenLen) }
+
+// createAndJoinResumable pairs two connections that both sent resume tokens.
+func createAndJoinResumable(t *testing.T, url string) (host, client *websocket.Conn, code string) {
+	t.Helper()
+	host = wsDial(t, url)
+	wsSend(t, host, append([]byte{WSCreateRoom}, testToken(1)...)...)
+	created := wsRead(t, host)
+	expectType(t, created, WSRoomCreated)
+	code = string(created[1:])
+
+	client = wsDial(t, url)
+	wsSend(t, client, append(append([]byte{WSJoinRoom}, code...), testToken(2)...)...)
+	expectType(t, wsRead(t, client), WSJoined)
+	expectType(t, wsRead(t, host), WSPeerJoined)
+	return host, client, code
+}
+
+func resumeMsg(code string, token []byte, got uint32) []byte {
+	msg := append([]byte{WSResume}, code...)
+	msg = append(msg, token...)
+	return append(msg, withCount(0, got)[1:]...)
+}
+
+func expectCount(t *testing.T, msg []byte, typ byte, want uint32) {
+	t.Helper()
+	expectType(t, msg, typ)
+	if len(msg) != 5 || binary.BigEndian.Uint32(msg[1:]) != want {
+		t.Fatalf("got %x, want type 0x%02x with count %d", msg, typ, want)
+	}
+}
+
+func TestWSResumeAfterDroppedConnection(t *testing.T) {
+	hub, url := startWSServer(t)
+	host, client, code := createAndJoinResumable(t, url)
+
+	wsSend(t, host, WSData, 1)
+	expectType(t, wsRead(t, client), WSData)
+	wsSend(t, client, WSData, 10)
+	expectType(t, wsRead(t, host), WSData) // the host has 1 message
+
+	// The host's phone drops the socket; the room stays.
+	host.CloseNow()
+	expectType(t, wsRead(t, client), WSPeerAway)
+	if n := hub.RoomCount(); n != 1 {
+		t.Fatalf("%d rooms open, want 1", n)
+	}
+	wsSend(t, client, WSData, 11)
+	wsSend(t, client, WSData, 12)
+
+	back := wsDial(t, url)
+	wsSend(t, back, resumeMsg(code, testToken(1), 1)...)
+	expectCount(t, wsRead(t, back), WSResumed, 1) // the server got 1 from the host
+	expectType(t, wsRead(t, back), WSPeerJoined)
+	for _, want := range []byte{11, 12} {
+		if got := wsRead(t, back); !bytes.Equal(got, []byte{WSData, want}) {
+			t.Fatalf("resumed host got %x, want data %d", got, want)
+		}
+	}
+	expectType(t, wsRead(t, client), WSPeerBack)
+
+	wsSend(t, back, WSData, 2)
+	if got := wsRead(t, client); !bytes.Equal(got, []byte{WSData, 2}) {
+		t.Fatalf("client got %x", got)
+	}
+}
+
+func TestWSResumeResendsUnacknowledged(t *testing.T) {
+	_, url := startWSServer(t)
+	host, client, code := createAndJoinResumable(t, url)
+	for i := byte(0); i < 5; i++ {
+		wsSend(t, host, WSData, i)
+	}
+	for i := 0; i < 5; i++ {
+		wsRead(t, client)
+	}
+	wsSend(t, client, withCount(WSAck, 2)...)
+	expectCount(t, wsRead(t, client), WSAckReply, 0)
+
+	// The last three were "lost" on the dying connection.
+	client.CloseNow()
+	back := wsDial(t, url)
+	wsSend(t, back, resumeMsg(code, testToken(2), 2)...)
+	expectCount(t, wsRead(t, back), WSResumed, 0)
+	expectType(t, wsRead(t, back), WSJoined)
+	for _, want := range []byte{2, 3, 4} {
+		if got := wsRead(t, back); !bytes.Equal(got, []byte{WSData, want}) {
+			t.Fatalf("got %x, want data %d", got, want)
+		}
+	}
+
+	// Asking for what was acknowledged (and dropped) cannot work.
+	back.CloseNow()
+	again := wsDial(t, url)
+	wsSend(t, again, resumeMsg(code, testToken(2), 0)...)
+	expectType(t, wsRead(t, again), WSError)
+}
+
+func TestWSResumeNeedsTheToken(t *testing.T) {
+	_, url := startWSServer(t)
+	host, client, code := createAndJoinResumable(t, url)
+	host.CloseNow()
+	expectType(t, wsRead(t, client), WSPeerAway)
+
+	thief := wsDial(t, url)
+	wsSend(t, thief, resumeMsg(code, testToken(9), 0)...)
+	msg := wsRead(t, thief)
+	expectType(t, msg, WSError)
+	if msg[1] != ErrRoomNotFound {
+		t.Fatalf("error code %d", msg[1])
+	}
+}
+
+func TestWSLeaveClosesResumableRoom(t *testing.T) {
+	hub, url := startWSServer(t)
+	host, client, _ := createAndJoinResumable(t, url)
+	wsSend(t, client, WSLeave)
+	expectType(t, wsRead(t, host), WSPeerLeft)
+	deadline := time.Now().Add(2 * time.Second)
+	for hub.RoomCount() != 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if n := hub.RoomCount(); n != 0 {
+		t.Fatalf("%d rooms left open", n)
+	}
+}
+
+func TestWSAwayPlayerRunsOutOfTime(t *testing.T) {
+	hub, url := startWSServer(t)
+	hub.resumeGrace = 50 * time.Millisecond
+	host, client, code := createAndJoinResumable(t, url)
+	client.CloseNow()
+	expectType(t, wsRead(t, host), WSPeerAway)
+	expectType(t, wsRead(t, host), WSPeerLeft)
+
+	late := wsDial(t, url)
+	wsSend(t, late, resumeMsg(code, testToken(2), 0)...)
+	expectType(t, wsRead(t, late), WSError)
+}
+
+func TestWSHostAwayBeforeAnyoneJoins(t *testing.T) {
+	_, url := startWSServer(t)
+	host := wsDial(t, url)
+	wsSend(t, host, append([]byte{WSCreateRoom}, testToken(1)...)...)
+	created := wsRead(t, host)
+	expectType(t, created, WSRoomCreated)
+	code := string(created[1:])
+
+	// The host switches to a messenger to send the code; the socket dies.
+	host.CloseNow()
+	time.Sleep(50 * time.Millisecond)
+
+	client := wsDial(t, url)
+	wsSend(t, client, append([]byte{WSJoinRoom}, code...)...)
+	expectType(t, wsRead(t, client), WSJoined)
+	expectType(t, wsRead(t, client), WSPeerAway)
+	wsSend(t, client, WSData, 7)
+
+	back := wsDial(t, url)
+	wsSend(t, back, resumeMsg(code, testToken(1), 0)...)
+	expectCount(t, wsRead(t, back), WSResumed, 0)
+	expectType(t, wsRead(t, back), WSPeerJoined)
+	if got := wsRead(t, back); !bytes.Equal(got, []byte{WSData, 7}) {
+		t.Fatalf("host got %x", got)
+	}
+	expectType(t, wsRead(t, client), WSPeerBack)
 }

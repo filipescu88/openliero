@@ -34,7 +34,7 @@ void RelayConnectState::Enter() {
                                               : "JOINING ROOM " + roomCode_ + "...";
   statusLine2_ = "CONNECTING TO SERVER...";
 
-  relay_.Start(kUrl.empty() ? nullptr : OpenBrowserRelaySocket(kUrl),
+  relay_.Start(kUrl.empty() ? nullptr : OpenResumableRelaySocket(kUrl),
                role_ == NetSession::kHost ? std::string() : roomCode_);
   if (relay_.GetState() == RelayClient::State::kFailed) {
     statusLine2_ = relay_.Error();
@@ -65,7 +65,9 @@ bool RelayConnectState::Update() {
         inviteLink_ = web_page::InviteLink(roomCode_);
       }
       statusLine1_ = "ROOM CODE: " + roomCode_;
-      statusLine2_ = "WAITING FOR PEER...";
+      // The room survives the page going to the background (to send the
+      // code): the link comes back on its own.
+      statusLine2_ = relay_.Reconnecting() ? "RECONNECTING..." : "WAITING FOR PEER...";
       // A tap anywhere (the touch overlay sends it as ENTER + fire) or ENTER
       // shares the invite link — WhatsApp etc. through the phone's share sheet.
       if (!inviteLink_.empty() && (gfx->TestSdlKeyOnce(SDL_SCANCODE_RETURN) ||
