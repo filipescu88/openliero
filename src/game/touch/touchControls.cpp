@@ -145,23 +145,62 @@ void TouchControls::RecomputeLayout(Gfx& gfx) {
   layout_h_ = h;
   layout_valid_ = true;
 
-  float const kMin = static_cast<float>(std::min(w, h));
+  auto const kW = static_cast<float>(w);
+  auto const kH = static_cast<float>(h);
+
+  // Ekran szerszy niż gra (telefon w poziomie, gfx.cpp poszerza wtedy klatkę):
+  // gra 16:10 stoi pośrodku, a po bokach są pasy — sterowanie idzie tam, żeby
+  // ani przyciski, ani palce nie zasłaniały robaków.
+  float const kBar = (kW - (kH * 1.6F)) / 2.0F;
+  if (kBar >= kH * 0.22F) {
+    float const kPad = std::max(4.0F, kBar * 0.06F);
+
+    // Lewy pas: drążek nisko, pod kciukiem.
+    stick_r_ = std::min((kBar * 0.5F) - kPad, kH * 0.20F);
+    stick_.base_x = kBar / 2.0F;
+    stick_.base_y = kH - kPad - stick_r_ - (kH * 0.04F);
+
+    // Prawy pas: OGIEN na dole pod kciukiem, nad nim dwie kolumny
+    // (SKOK | LINA, BRON | KOP), MENU na samej górze.
+    float const kCx = kW - (kBar / 2.0F);
+    float const kFireR = std::min((kBar * 0.5F) - kPad, kH * 0.14F);
+    float const kFireY = kH - kPad - kFireR;
+    float const kSmallR = std::min((kBar - (3.0F * kPad)) / 4.0F, kH * 0.075F);
+    float const kLeftX = kCx - kSmallR - (kPad / 2.0F);
+    float const kRightX = kCx + kSmallR + (kPad / 2.0F);
+    float const kRow1 = kFireY - kFireR - kPad - kSmallR;
+    float const kRow2 = kRow1 - (2.0F * kSmallR) - (kPad * 1.5F);
+    buttons_[kBtnFire] = {.x = kCx, .y = kFireY, .r = kFireR};
+    buttons_[kBtnJump] = {.x = kLeftX, .y = kRow1, .r = kSmallR};
+    buttons_[kBtnRope] = {.x = kRightX, .y = kRow1, .r = kSmallR};
+    buttons_[kBtnChange] = {.x = kLeftX, .y = kRow2, .r = kSmallR};
+    buttons_[kBtnDig] = {.x = kRightX, .y = kRow2, .r = kSmallR};
+    buttons_[kBtnMenu] = {.x = kCx, .y = kPad + (kSmallR * 0.9F), .r = kSmallR * 0.9F};
+
+    // Cały prawy pas od BRON w dół to strefa przycisków.
+    zone_x0_ = kW - kBar;
+    zone_x1_ = kW;
+    zone_y0_ = kRow2 - (kSmallR * 1.4F);
+    zone_y1_ = kH;
+    return;
+  }
+
+  // Ekran o proporcjach gry (albo wyższy): sterowanie na obrazie gry.
+  float const kMin = std::min(kW, kH);
   float const kMargin = std::max(6.0F, kMin * 0.03F);
-  float const kStickR = std::clamp(kMin * 0.20F, 34.0F, 110.0F);
+  stick_r_ = std::clamp(kMin * 0.20F, 34.0F, 110.0F);
   float const kBtnR = std::clamp(kMin * 0.10F, 20.0F, 46.0F);
-  float const kStepY = kBtnR * 1.85F;  // odstęp między krążkami w kolumnie
-  float const kGap = kBtnR * 0.55F;    // odstęp drążka od kolumny przycisków
 
   // Drążek (lewy kciuk): ruch + celowanie (odpowiednik strzałek).
-  stick_.base_x = kMargin + kStickR;
-  stick_.base_y = static_cast<float>(h) - kMargin - kStickR;
+  stick_.base_x = kMargin + stick_r_;
+  stick_.base_y = kH - kMargin - stick_r_;
 
   // Prawy kciuk: duży OGIEN w rogu, reszta w łuku wokół niego (od dołu-lewej do
   // góry): SKOK, LINA, BRON — każdy w tej samej odległości od OGIEN, więc kciuk
   // oparty na ogniu sięga wszystkich. KOP nad BRON, MENU osobno w rogu ekranu.
   float const kFireR = kBtnR * 1.25F;
-  float const kFireX = static_cast<float>(w) - kMargin - kFireR;
-  float const kFireY = static_cast<float>(h) - kMargin - kFireR;
+  float const kFireX = kW - kMargin - kFireR;
+  float const kFireY = kH - kMargin - kFireR;
   buttons_[kBtnFire] = {.x = kFireX, .y = kFireY, .r = kFireR};
   float const kArc = kFireR + (kBtnR * 1.70F);  // odległość środków od OGIEN
   auto const kOnArc = [&](float deg, float r) {
@@ -174,17 +213,16 @@ void TouchControls::RecomputeLayout(Gfx& gfx) {
   buttons_[kBtnChange] = kOnArc(90.0F, kBtnR * 0.90F);
   buttons_[kBtnDig] = {
       .x = kFireX, .y = buttons_[kBtnChange].y - (kBtnR * 1.85F), .r = kBtnR * 0.80F};
-  buttons_[kBtnMenu] = {.x = static_cast<float>(w) - kMargin - (kBtnR * 0.70F),
-                        .y = kMargin + (kBtnR * 0.70F),
-                        .r = kBtnR * 0.70F};
+  buttons_[kBtnMenu] = {
+      .x = kW - kMargin - (kBtnR * 0.70F), .y = kMargin + (kBtnR * 0.70F), .r = kBtnR * 0.70F};
 
   // Strefa przycisków: prostokąt obejmujący łuk i KOP (bez MENU). Dotyk tutaj —
   // nawet w przerwę albo w etykietę — trafia w najbliższy przycisk. Wcześniej
   // niecelny dotyk po prawej stronie kończył się „tapnięciem”, czyli strzałem.
   zone_x0_ = buttons_[kBtnJump].x - (buttons_[kBtnJump].r * 1.4F);
-  zone_x1_ = static_cast<float>(w);
+  zone_x1_ = kW;
   zone_y0_ = buttons_[kBtnDig].y - (buttons_[kBtnDig].r * 1.4F);
-  zone_y1_ = static_cast<float>(h);
+  zone_y1_ = kH;
 }
 
 void TouchControls::SimulateFinger(SDL_FingerID id, bool down, float nx, float ny, Gfx& gfx) {
@@ -238,8 +276,7 @@ void TouchControls::HandleEvent(SDL_Event const& ev, Gfx& gfx) {
 
     // 2) drążek — „chwyt” w promieniu strefy. Środek drążka jest STAŁY (środek
     //    strefy z layoutu) — dotknięcie nie przesuwa drążka pod palec.
-    float const kStickR =
-        std::clamp(static_cast<float>(std::min(layout_w_, layout_h_)) * 0.20F, 34.0F, 110.0F);
+    float const kStickR = stick_r_;
     if (!stick_.active && InDisc(kX, kY, stick_.base_x, stick_.base_y, kStickR * kStickZoneScale)) {
       stick_.active = true;
       stick_.finger = kId;
@@ -477,8 +514,7 @@ void TouchControls::Apply(Gfx& gfx, uint64_t now_ms) {
   }
 
   // 2) drążek → 8 kierunków (ruch + celowanie)
-  float const kStickR =
-      std::clamp(static_cast<float>(std::min(layout_w_, layout_h_)) * 0.20F, 34.0F, 110.0F);
+  float const kStickR = stick_r_;
   std::array<bool, kDirCount> dirs{};
   if (stick_.active) {
     dirs = StickDirs(ClampUnit((stick_.x - stick_.base_x) / kStickR),
@@ -611,8 +647,7 @@ void TouchControls::DrawOverlay(SDL_Surface& surface, Gfx& gfx) {
   if (layout_w_ <= 0 || layout_h_ <= 0) {
     return;
   }
-  float const kStickR =
-      std::clamp(static_cast<float>(std::min(layout_w_, layout_h_)) * 0.20F, 34.0F, 110.0F);
+  float const kStickR = stick_r_;
 
   // Drążek: podstawa + gałka (gałka idzie za palcem, przycięta do promienia).
   Stick const& s = stick_;

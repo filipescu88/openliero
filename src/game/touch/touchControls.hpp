@@ -103,6 +103,7 @@ struct TouchControls {
   int layout_h_ = 0;
 
   Stick stick_{};
+  float stick_r_ = 0.0F;  // promień drążka (z layoutu)
   std::array<Button, kBtnCount> buttons_{};
   // Strefa przycisków (prawy dolny róg): dotyk tutaj (etykieta, przerwa między
   // krążkami) trafia w najbliższy przycisk, zamiast być „tapnięciem” (= strzał).

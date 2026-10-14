@@ -41,6 +41,9 @@ struct RollbackController : CommonController {
   void Focus() override;
   bool Process() override;
   void Draw(Renderer& renderer, bool use_spectator_viewports) override;
+  // One wide view of the local worm (and only the opponent's status bar)
+  // instead of split screen. Display only; the web build uses it.
+  void UseSingleView();
   void SwapLevel(Level& new_level) override;
   Level* CurrentLevel() override;
   Game* CurrentGame() override;

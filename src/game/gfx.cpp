@@ -402,24 +402,37 @@ void Gfx::SetVideoMode() {
 
 void Gfx::OnWindowResize(uint32_t window_id) {
   if (window_id == SDL_GetWindowID(sdl_window)) {
+    int frame_w = double_res ? 640 : 320;
+    int const kFrameH = double_res ? 400 : 200;
+    // With touch controls on a screen wider than the game (a phone held
+    // sideways), widen the frame to the screen's shape: the game stays
+    // centred at its size, and the controls go on the side bars that would
+    // otherwise be black letterbox — not over the worms.
+    if (touch.Enabled()) {
+      int win_w = 0;
+      int win_h = 0;
+      SDL_GetWindowSizeInPixels(sdl_window, &win_w, &win_h);
+      if (win_w > 0 && win_h > 0 && win_w * kFrameH > win_h * frame_w) {
+        frame_w = std::min(frame_w * 5 / 2, ((win_w * kFrameH) + (win_h / 2)) / win_h);
+      }
+    }
+
     if (sdl_texture) {
       SDL_DestroyTexture(sdl_texture);
       sdl_texture = nullptr;
     }
-    sdl_texture =
-        SDL_CreateTexture(sdl_renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING,
-                          double_res ? 640 : 320, double_res ? 400 : 200);
+    sdl_texture = SDL_CreateTexture(sdl_renderer, SDL_PIXELFORMAT_ARGB8888,
+                                    SDL_TEXTUREACCESS_STREAMING, frame_w, kFrameH);
 
     if (sdl_draw_surface) {
       SDL_DestroySurface(sdl_draw_surface);
       sdl_draw_surface = nullptr;
     }
-    sdl_draw_surface =
-        SDL_CreateSurface(double_res ? 640 : 320, double_res ? 400 : 200, SDL_PIXELFORMAT_ARGB8888);
+    sdl_draw_surface = SDL_CreateSurface(frame_w, kFrameH, SDL_PIXELFORMAT_ARGB8888);
     // linear for that old-school chunky look, but consider adding a user
     // option for this
     SDL_SetTextureScaleMode(sdl_texture, SDL_SCALEMODE_LINEAR);
-    SDL_SetRenderLogicalPresentation(sdl_renderer, double_res ? 640 : 320, double_res ? 400 : 200,
+    SDL_SetRenderLogicalPresentation(sdl_renderer, frame_w, kFrameH,
                                      SDL_LOGICAL_PRESENTATION_LETTERBOX);
   } else {
     if (sdl_spectator_texture) {

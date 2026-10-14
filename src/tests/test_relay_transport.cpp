@@ -17,10 +17,12 @@
 #include <vector>
 
 #include "game.hpp"
+#include "gfx/renderer.hpp"
 #include "math.hpp"
 #include "net/relayLink.hpp"
 #include "net/session.hpp"
 #include "net/transport.hpp"
+#include "viewport.hpp"
 #include "webPage.hpp"
 
 namespace {
@@ -387,4 +389,58 @@ TEST_CASE("Two NetSessions play a match over the relay", "[relay][session]") {
     host.Update();
   }
   CHECK(host.State() == NetSession::kDisconnected);
+}
+
+TEST_CASE("A single-view peer stays in sync and draws its own worm wide", "[relay][session]") {
+  Env const kE;
+  FakeRelay relay;
+  auto [host_transport, client_transport] = PairedTransports(relay);
+
+  NetSession host(kE.common, kE.settings, kE.tc_root);
+  NetSession client(kE.common, kE.settings, kE.tc_root);
+  bool const kHostStarted = host.HostWithTransport(std::move(host_transport));
+  bool const kClientStarted = client.JoinWithTransport(std::move(client_transport));
+  REQUIRE(kHostStarted);
+  REQUIRE(kClientStarted);
+  for (int i = 0;
+       i < 200 && (host.State() != NetSession::kPlaying || client.State() != NetSession::kPlaying);
+       ++i) {
+    host.Update();
+    client.Update();
+  }
+  REQUIRE(host.State() == NetSession::kPlaying);
+  REQUIRE(client.State() == NetSession::kPlaying);
+
+  // Only the client switches (as the web build does); the host keeps split
+  // screen. Display layout must not leak into the simulation.
+  RollbackController& rc = *client.Rollback();
+  rc.UseSingleView();
+  REQUIRE(rc.game.viewports.size() == 2);
+  for (Viewport const* vp : rc.game.viewports) {
+    if (vp->rect.Width() > 0) {
+      CHECK(vp->rect.Width() == 320);
+      CHECK(vp->rect.Height() == 158);
+    } else {
+      CHECK(vp->rect.Height() == 0);  // the opponent: status bar only
+    }
+  }
+
+  Renderer renderer;
+  renderer.Init(320, 200);
+  renderer.LoadPalette(*kE.common);
+
+  host.Rollback()->Focus();
+  rc.Focus();
+  for (int i = 0; i < 300; ++i) {
+    host.Rollback()->Process();
+    rc.Process();
+    host.Update();
+    client.Update();
+    if (i % 50 == 0) {
+      rc.Draw(renderer, /*use_spectator_viewports=*/false);
+    }
+  }
+  CHECK(rc.CurrentFrame() > 0);
+  CHECK_FALSE(host.DesyncDetected());
+  CHECK_FALSE(client.DesyncDetected());
 }
