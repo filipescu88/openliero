@@ -270,3 +270,47 @@ TEST_CASE("Buttons drive a real match - LINA throws the rope and SKOK releases i
 
   gfx.controller.reset();
 }
+
+TEST_CASE("On a wide screen the controls sit on the side bars, off the game") {
+  TouchFixture f;
+  // A phone held sideways: Gfx widens the frame to 888x400, the game stays
+  // 640x400 in the middle (x 124..764) and the bars on both sides are free.
+  gfx.window_w = 888;
+  gfx.window_h = 400;
+  float const kWideW = 888.0F;
+  auto const kAt = [&](SDL_FingerID id, bool down, float x, float y) {
+    f.touch.SimulateFinger(id, down, x / kWideW, y / kH, gfx);
+  };
+
+  // Stick: centre of the left bar, low. Pushing up presses up.
+  kAt(1, /*down=*/true, 62.0F, 322.0F);
+  SDL_Event ev{};
+  ev.type = SDL_EVENT_FINGER_MOTION;
+  ev.tfinger.fingerID = 1;
+  ev.tfinger.x = 62.0F / kWideW;
+  ev.tfinger.y = 280.0F / kH;
+  f.touch.HandleEvent(ev, gfx);
+  f.touch.Apply(gfx, f.now_ms);
+  CHECK(gfx.TestControl(WormSettings::kUp));
+  kAt(1, /*down=*/false, 62.0F, 280.0F);
+
+  // Right bar: OGIEN at the bottom, SKOK above it on the left.
+  kAt(2, /*down=*/true, 826.0F, 338.0F);
+  f.touch.Apply(gfx, f.now_ms);
+  CHECK(gfx.TestControl(WormSettings::kFire));
+  kAt(2, /*down=*/false, 826.0F, 338.0F);
+  kAt(3, /*down=*/true, 797.0F, 251.0F);
+  f.touch.Apply(gfx, f.now_ms);
+  CHECK(gfx.TestControl(WormSettings::kJump));
+  kAt(3, /*down=*/false, 797.0F, 251.0F);
+  f.touch.Apply(gfx, f.now_ms);
+
+  // A finger resting on the game (near either edge) presses nothing.
+  kAt(4, /*down=*/true, 180.0F, 322.0F);
+  kAt(5, /*down=*/true, 720.0F, 338.0F);
+  f.touch.Apply(gfx, f.now_ms);
+  for (int const kControl : {WormSettings::kLeft, WormSettings::kRight, WormSettings::kUp,
+                             WormSettings::kDown, WormSettings::kFire, WormSettings::kJump}) {
+    CHECK_FALSE(gfx.TestControl(kControl));
+  }
+}

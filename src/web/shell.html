@@ -27,8 +27,8 @@
     -webkit-tap-highlight-color: transparent;
     font-family: system-ui, arial, sans-serif;
   }
-  /* Kanwa ma proporcje gry (16:10); CSS ustawia ją na największy prostokąt
-     mieszczący się na ekranie, bez rozciągania. */
+  /* Kanwa zajmuje cały ekran w poziomie (gra 16:10 pośrodku, sterowanie na
+     bocznych pasach); na ekranach wyższych niż 16:10 — największy prostokąt 16:10. */
   #canvas {
     position: fixed; display: block; background: #000; border: 0; outline: none;
     touch-action: none; image-rendering: pixelated; image-rendering: crisp-edges;
@@ -144,9 +144,12 @@
     // 640x400 rozjeżdżało się z oknem SDL i na dużym ekranie gra była powiększona
     // w lewy dolny róg. Dotyk jest liczony względem kanwy (0..1), więc nadal pasuje.
 
+    // Ekran szerszy niż 16:10 (telefon w poziomie): kanwa na cały ekran — gra
+    // zostaje 16:10 pośrodku, a sterowanie dotykowe ląduje na bocznych pasach
+    // (gfx.cpp, OnWindowResize). Ekran wyższy: największy prostokąt 16:10.
     var ratio = GAME_W / GAME_H;
     var w = v.w, h = v.h;
-    if (w / h > ratio) { w = h * ratio; } else { h = w / ratio; }
+    if (w / h < ratio) { h = w / ratio; }
     canvasElement.style.width = Math.round(w) + 'px';
     canvasElement.style.height = Math.round(h) + 'px';
     canvasElement.style.left = Math.round((v.w - w) / 2) + 'px';
