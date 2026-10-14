@@ -156,6 +156,9 @@ void NetConnectState::Draw() {
         line2 = "CONNECTING...";
         break;
     }
+    if (char const* const kNotice = gfx->net_session->Transport().LinkNotice()) {
+      line2 = kNotice;
+    }
   } else {
     line2 = "STARTING...";
   }

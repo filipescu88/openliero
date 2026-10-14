@@ -1,6 +1,8 @@
 #include "gamePlayState.hpp"
 
 #include <cstdio>
+#include <string>
+#include "common.hpp"
 #include "controller/controller.hpp"
 #include "controller/rollbackController.hpp"
 #include "game.hpp"
@@ -10,6 +12,21 @@
 #include "rematchState.hpp"
 #include "statsState.hpp"
 #include "stats_recorder.hpp"
+
+void DrawNetLinkNotice(Gfx& gfx, int y) {
+  if (!gfx.net_session) {
+    return;
+  }
+  char const* const kNotice = gfx.net_session->Transport().LinkNotice();
+  if (!kNotice) {
+    return;
+  }
+  Font& font = gfx.common->font;
+  std::string const kText(kNotice);
+  int const kW = font.GetDims(kText) + 4;
+  font.DrawFramedText(gfx.play_renderer.bmp, kText, (gfx.play_renderer.render_res_x - kW) / 2, y,
+                      50);
+}
 
 void GamePlayState::Enter() { gfx->controller->Focus(); }
 
@@ -99,6 +116,7 @@ bool GamePlayState::Update() {
 void GamePlayState::Draw() {
   gfx->play_renderer.Clear();
   gfx->controller->Draw(gfx->play_renderer, /*use_spectator_viewports=*/false);
+  DrawNetLinkNotice(*gfx, 70);
 
   gfx->SetSpectatorLayout(gfx->controller->InWeaponSelection());
   gfx->single_screen_renderer.Clear();

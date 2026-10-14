@@ -238,4 +238,5 @@ void RematchState::Draw() {
 
   // Draw menu
   menu_.Draw(common, gfx->play_renderer, /*disabled=*/false);
+  DrawNetLinkNotice(*gfx, 186);
 }

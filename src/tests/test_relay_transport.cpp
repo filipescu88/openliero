@@ -87,7 +87,11 @@ struct FakeRelay {
         break;
       }
       case relay::kJoinRoom: {
-        std::string const kCode(msg.begin() + 1, msg.end());
+        if (msg.size() < 1 + relay::kRoomCodeLen) {
+          break;
+        }
+        // A resume token may follow the code; this relay ignores it.
+        std::string const kCode(msg.begin() + 1, msg.begin() + 1 + relay::kRoomCodeLen);
         auto it = rooms_.find(kCode);
         if (it == rooms_.end()) {
           Deliver(from, {relay::kError, 0x01});
@@ -443,4 +447,278 @@ TEST_CASE("A single-view peer stays in sync and draws its own worm wide", "[rela
   CHECK(rc.CurrentFrame() > 0);
   CHECK_FALSE(host.DesyncDetected());
   CHECK_FALSE(client.DesyncDetected());
+}
+
+namespace {
+
+// A socket whose far end is the test: it reads what was sent and scripts
+// what the relay answers.
+struct ScriptSocket : RelaySocket {
+  State GetState() const override { return state; }
+  void Send(std::vector<uint8_t> const& msg) override {
+    if (state == State::kOpen) {
+      sent.push_back(msg);
+    }
+  }
+  bool Receive(std::vector<uint8_t>& msg) override {
+    if (inbox.empty()) {
+      return false;
+    }
+    msg = std::move(inbox.front());
+    inbox.pop_front();
+    return true;
+  }
+
+  State state = State::kOpen;
+  std::vector<std::vector<uint8_t>> sent;
+  std::deque<std::vector<uint8_t>> inbox;
+};
+
+// Owns the ResumableRelaySocket under test, its clock, and every socket it
+// opened (they outlive the wrapper's handles so the test can inspect them).
+struct ResumeRig {
+  ResumeRig() {
+    sock = std::make_unique<ResumableRelaySocket>(
+        [this]() -> std::unique_ptr<RelaySocket> {
+          if (!can_connect) {
+            return nullptr;
+          }
+          return std::make_unique<Proxy>(*this);
+        },
+        [this] { return now; });
+  }
+
+  // Forwards to the newest ScriptSocket (kept in `opened`).
+  struct Proxy : RelaySocket {
+    explicit Proxy(ResumeRig& rig)
+        : script(rig.opened.emplace_back(std::make_shared<ScriptSocket>())) {
+      script->state = rig.open_state;
+    }
+    ~Proxy() override { script->state = State::kClosed; }
+    Proxy(Proxy const&) = delete;
+    Proxy& operator=(Proxy const&) = delete;
+    Proxy(Proxy&&) = delete;
+    Proxy& operator=(Proxy&&) = delete;
+    State GetState() const override { return script->GetState(); }
+    void Send(std::vector<uint8_t> const& msg) override { script->Send(msg); }
+    bool Receive(std::vector<uint8_t>& msg) override { return script->Receive(msg); }
+    std::shared_ptr<ScriptSocket> script;
+  };
+
+  ScriptSocket& Last() { return *opened.back(); }
+
+  // Creates a room as the host would and gets it "joined".
+  void IntoRoom() {
+    sock->Send({relay::kCreateRoom});
+    Last().inbox.push_back({relay::kRoomCreated, 'A', 'B', 'C', '2', '3', '4'});
+    Tick(16);
+    Last().inbox.push_back({relay::kPeerJoined});
+    Tick(16);
+    std::vector<uint8_t> msg;
+    while (sock->Receive(msg)) {
+    }
+  }
+
+  void Tick(uint64_t ms) {
+    now += ms;
+    sock->Poll();
+  }
+
+  uint64_t now = 1000;
+  bool can_connect = true;
+  RelaySocket::State open_state = RelaySocket::State::kOpen;
+  std::vector<std::shared_ptr<ScriptSocket>> opened;
+  std::unique_ptr<ResumableRelaySocket> sock;
+};
+
+std::vector<uint8_t> WithCount(uint8_t type, uint32_t n) {
+  return {type, static_cast<uint8_t>(n >> 24), static_cast<uint8_t>(n >> 16),
+          static_cast<uint8_t>(n >> 8), static_cast<uint8_t>(n)};
+}
+
+bool SentType(ScriptSocket const& s, uint8_t type) {
+  for (auto const& m : s.sent) {
+    if (!m.empty() && m[0] == type) {
+      return true;
+    }
+  }
+  return false;
+}
+
+}  // namespace
+
+TEST_CASE("ResumableRelaySocket sends a resume token with the room request", "[relay][resume]") {
+  ResumeRig rig;
+  rig.sock->Send({relay::kJoinRoom, 'A', 'B', 'C', '2', '3', '4'});
+  REQUIRE(rig.Last().sent.size() == 1);
+  CHECK(rig.Last().sent[0].size() == 1 + relay::kRoomCodeLen + relay::kTokenLen);
+
+  ResumeRig host;
+  host.sock->Send({relay::kCreateRoom});
+  REQUIRE(host.Last().sent.size() == 1);
+  CHECK(host.Last().sent[0].size() == 1 + relay::kTokenLen);
+}
+
+TEST_CASE("ResumableRelaySocket takes its seat back after the socket drops", "[relay][resume]") {
+  ResumeRig rig;
+  rig.IntoRoom();
+  auto const kToken =
+      std::vector<uint8_t>(rig.Last().sent[0].begin() + 1, rig.Last().sent[0].end());
+
+  // Two messages each way before the drop.
+  rig.sock->Send({relay::kData, 1});
+  rig.sock->Send({relay::kData, 2});
+  rig.Last().inbox.push_back({relay::kData, 10});
+  rig.Last().inbox.push_back({relay::kData, 11});
+  rig.Tick(16);
+  std::vector<uint8_t> msg;
+  REQUIRE(rig.sock->Receive(msg));
+  REQUIRE(rig.sock->Receive(msg));
+
+  // The browser drops the socket (page in the background).
+  rig.Last().state = RelaySocket::State::kClosed;
+  rig.Tick(16);
+  CHECK(rig.sock->Reconnecting());
+  CHECK(rig.sock->GetState() == RelaySocket::State::kOpen);  // the game sees no disconnect
+  rig.sock->Send({relay::kData, 3});                         // held until resumed
+
+  rig.Tick(16);
+  REQUIRE(rig.opened.size() == 2);
+  ScriptSocket& again = rig.Last();
+  REQUIRE(again.sent.size() == 1);
+  std::vector<uint8_t> want{relay::kResume, 'A', 'B', 'C', '2', '3', '4'};
+  want.insert(want.end(), kToken.begin(), kToken.end());
+  auto const kCount = WithCount(0, 2);  // we have the peer's two messages
+  want.insert(want.end(), kCount.begin() + 1, kCount.end());
+  CHECK(again.sent[0] == want);
+
+  // The relay only got our first message: the second and third go again.
+  again.inbox.push_back(WithCount(relay::kResumed, 1));
+  again.inbox.push_back({relay::kPeerJoined});
+  again.inbox.push_back({relay::kData, 12});
+  rig.Tick(16);
+  CHECK_FALSE(rig.sock->Reconnecting());
+  REQUIRE(again.sent.size() >= 3);
+  CHECK(again.sent[1] == std::vector<uint8_t>{relay::kData, 2});
+  CHECK(again.sent[2] == std::vector<uint8_t>{relay::kData, 3});
+
+  REQUIRE(rig.sock->Receive(msg));
+  CHECK(msg == std::vector<uint8_t>{relay::kPeerJoined});
+  REQUIRE(rig.sock->Receive(msg));
+  CHECK(msg == std::vector<uint8_t>{relay::kData, 12});
+  CHECK_FALSE(rig.sock->Receive(msg));
+}
+
+TEST_CASE("ResumableRelaySocket acks what it got and forgets what the relay has",
+          "[relay][resume]") {
+  ResumeRig rig;
+  rig.IntoRoom();
+  rig.sock->Send({relay::kData, 1});
+  rig.Last().inbox.push_back({relay::kData, 10});
+  rig.Tick(ResumableRelaySocket::kAckIntervalMs);
+  CHECK(rig.Last().sent.back() == WithCount(relay::kAck, 1));
+
+  rig.Last().inbox.push_back(WithCount(relay::kAckReply, 1));
+  rig.Tick(16);
+  rig.Last().state = RelaySocket::State::kClosed;
+  rig.Tick(16);
+  rig.Tick(16);
+  rig.Last().inbox.push_back(WithCount(relay::kResumed, 1));
+  rig.Tick(16);
+  CHECK_FALSE(rig.sock->Reconnecting());
+  CHECK_FALSE(SentType(rig.Last(), relay::kData));  // nothing to send again
+}
+
+TEST_CASE("ResumableRelaySocket replaces a socket that went silent", "[relay][resume]") {
+  ResumeRig rig;
+  rig.IntoRoom();
+  for (uint64_t t = 0; t <= ResumableRelaySocket::kSilenceMs; t += 500) {
+    rig.Tick(500);  // acks go out, no reply ever comes
+  }
+  CHECK(rig.sock->Reconnecting());
+  rig.Tick(16);
+  CHECK(rig.opened.size() == 2);
+  CHECK(SentType(rig.Last(), relay::kResume));
+}
+
+TEST_CASE("ResumableRelaySocket does not blame the socket for a frozen page", "[relay][resume]") {
+  ResumeRig rig;
+  rig.IntoRoom();
+  rig.Tick(60'000);  // the page was in the background for a minute
+  rig.Tick(16);
+  CHECK_FALSE(rig.sock->Reconnecting());
+  CHECK(rig.opened.size() == 1);
+}
+
+TEST_CASE("ResumableRelaySocket closes when the room is gone", "[relay][resume]") {
+  ResumeRig rig;
+  rig.IntoRoom();
+  rig.Last().state = RelaySocket::State::kClosed;
+  rig.Tick(16);
+  rig.Tick(16);
+  rig.Last().inbox.push_back({relay::kError, 0x01});
+  rig.Tick(16);
+  CHECK(rig.sock->GetState() == RelaySocket::State::kClosed);
+  std::vector<uint8_t> msg;
+  REQUIRE(rig.sock->Receive(msg));
+  CHECK(msg[0] == relay::kError);
+}
+
+TEST_CASE("ResumableRelaySocket keeps retrying while the network is down", "[relay][resume]") {
+  ResumeRig rig;
+  rig.IntoRoom();
+  rig.can_connect = false;
+  rig.Last().state = RelaySocket::State::kClosed;
+  for (int i = 0; i < 20; ++i) {
+    rig.Tick(1000);
+  }
+  CHECK(rig.sock->Reconnecting());
+  CHECK(rig.sock->GetState() == RelaySocket::State::kOpen);
+
+  rig.can_connect = true;
+  for (int i = 0; i < 10 && rig.opened.size() == 1; ++i) {
+    rig.Tick(1000);
+  }
+  REQUIRE(rig.opened.size() == 2);
+  CHECK(SentType(rig.Last(), relay::kResume));
+
+  // Long after the relay gave up on us, so do we.
+  ResumeRig late;
+  late.IntoRoom();
+  late.can_connect = false;
+  late.Last().state = RelaySocket::State::kClosed;
+  for (uint64_t t = 0; t <= ResumableRelaySocket::kGiveUpMs + 10'000; t += 1000) {
+    late.Tick(1000);
+  }
+  CHECK(late.sock->GetState() == RelaySocket::State::kClosed);
+}
+
+TEST_CASE("ResumableRelaySocket: losing the first socket is final", "[relay][resume]") {
+  ResumeRig rig;
+  rig.sock->Send({relay::kCreateRoom});
+  rig.Last().state = RelaySocket::State::kClosed;
+  rig.Tick(16);
+  CHECK(rig.sock->GetState() == RelaySocket::State::kClosed);
+  CHECK(rig.opened.size() == 1);
+}
+
+TEST_CASE("ResumableRelaySocket says when it leaves and tracks the peer", "[relay][resume]") {
+  ResumeRig rig;
+  rig.IntoRoom();
+  rig.Last().inbox.push_back({relay::kPeerAway});
+  rig.Tick(16);
+  CHECK(rig.sock->PeerAway());
+  rig.Last().inbox.push_back({relay::kPeerBack});
+  rig.Tick(16);
+  CHECK_FALSE(rig.sock->PeerAway());
+
+  std::shared_ptr<ScriptSocket> const kLast = rig.opened.back();
+  rig.sock.reset();
+  REQUIRE_FALSE(kLast->sent.empty());
+  // Sent just before the socket was closed.
+  bool left = false;
+  for (auto const& m : kLast->sent) {
+    left = left || m == std::vector<uint8_t>{relay::kLeave};
+  }
+  CHECK(left);
 }

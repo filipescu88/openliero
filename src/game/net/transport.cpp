@@ -255,11 +255,25 @@ bool NetTransport::UseRelaySocket(std::unique_ptr<RelaySocket> socket) {
   return true;
 }
 
+char const* NetTransport::LinkNotice() const {
+  if (!relay_) {
+    return nullptr;
+  }
+  if (relay_->Reconnecting()) {
+    return "CONNECTION LOST, RECONNECTING...";
+  }
+  if (relay_->PeerAway()) {
+    return "OPPONENT AWAY, WAITING...";
+  }
+  return nullptr;
+}
+
 bool NetTransport::HasPeer() const {
   return (peer_ != nullptr) || (relay_ && state_ == kConnected);
 }
 
 bool NetTransport::PollRelay() {
+  relay_->Poll();
   if (relayConnectPending_ && relay_->GetState() == RelaySocket::State::kOpen) {
     relayConnectPending_ = false;
     state_ = kConnected;
