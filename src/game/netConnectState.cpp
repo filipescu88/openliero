@@ -82,7 +82,9 @@ bool NetConnectState::Update() {
     return false;
   }
 
-  if (gfx->TestSdlKeyOnce(SDL_SCANCODE_ESCAPE)) {
+  if (gfx->TestSdlKeyOnce(SDL_SCANCODE_ESCAPE) ||
+      gfx->TestGamepadButtonOnce(SDL_GAMEPAD_BUTTON_EAST) ||
+      gfx->TestControlOnce(WormSettingsExtensions::kJump)) {
     gfx->net_session.reset();
     gfx->ClearKeys();
     return false;

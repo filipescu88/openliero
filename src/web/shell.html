@@ -54,10 +54,38 @@
     padding: 6px; white-space: pre-wrap;
   }
   #output.on { display: block; }
+  /* Pasek udostępniania kodu pokoju: prawdziwe przyciski DOM gwarantują
+     user-activation dla navigator.share i schowka na iOS/Androidzie. */
+  #invite {
+    position: fixed; left: 50%; top: max(10px, env(safe-area-inset-top));
+    transform: translateX(-50%); z-index: 18; display: none;
+    align-items: center; gap: 8px; flex-wrap: wrap; justify-content: center;
+    background: rgba(20, 24, 28, .92); border: 1px solid rgba(189, 215, 46, .55);
+    border-radius: 999px; padding: 6px 12px; color: #eee; font-size: 13px;
+    box-shadow: 0 4px 16px rgba(0,0,0,.6);
+  }
+  #invite.on { display: flex; }
+  #invite b {
+    font-family: ui-monospace, monospace; font-size: 15px; letter-spacing: .08em;
+    color: #ffd166; padding: 0 4px;
+  }
+  #invite button {
+    appearance: none; border: 0; border-radius: 999px; padding: 6px 12px;
+    font: 600 12px/1 system-ui, sans-serif; cursor: pointer; touch-action: manipulation;
+  }
+  #invite .share-btn { background: #bdd72e; color: #111; }
+  #invite .copy-btn { background: #2c353d; color: #eee; border: 1px solid #49545e; }
+  #invite button:active { transform: scale(.96); }
 </style>
 </head>
 <body>
 <canvas class="emscripten" id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
+
+<div id="invite" role="region" aria-label="Zaproszenie do pokoju">
+  <span>Kod: <b id="invite-code">------</b></span>
+  <button type="button" class="share-btn" id="invite-share">Udostępnij</button>
+  <button type="button" class="copy-btn" id="invite-copy">Kopiuj link</button>
+</div>
 
 <div id="rotate"><div>Obróć telefon<br><small>gra działa w poziomie</small></div></div>
 
@@ -76,6 +104,106 @@
   var loadingElement = document.getElementById('loading');
   var rotateElement = document.getElementById('rotate');
   var outputElement = document.getElementById('output');
+  var inviteElement = document.getElementById('invite');
+  var inviteCodeElement = document.getElementById('invite-code');
+  var inviteShareButton = document.getElementById('invite-share');
+  var inviteCopyButton = document.getElementById('invite-copy');
+  var currentRoomCode = '';
+
+  function buildInviteUrl(code) {
+    var u = new URL(location.href);
+    var keep = u.searchParams.get('relay');
+    u.search = '';
+    u.hash = '';
+    if (keep) { u.searchParams.set('relay', keep); }
+    u.searchParams.set('join', code);
+    return u.toString();
+  }
+
+  function copyTextToClipboard(text, onDone) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () {
+        if (onDone) { onDone(true); }
+      }).catch(function () {
+        fallbackCopyText(text, onDone);
+      });
+      return true;
+    }
+    return fallbackCopyText(text, onDone);
+  }
+
+  function fallbackCopyText(text, onDone) {
+    try {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      var ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      if (onDone) { onDone(!!ok); }
+      return !!ok;
+    } catch (e) {
+      if (onDone) { onDone(false); }
+      return false;
+    }
+  }
+
+  function flashCopyLabel(label) {
+    if (!inviteCopyButton) { return; }
+    inviteCopyButton.textContent = label;
+    window.clearTimeout(inviteCopyButton._timer);
+    inviteCopyButton._timer = window.setTimeout(function () {
+      inviteCopyButton.textContent = 'Kopiuj link';
+    }, 1800);
+  }
+
+  window.setLieroInviteRoom = function (code) {
+    currentRoomCode = code || '';
+    if (currentRoomCode) {
+      inviteCodeElement.textContent = currentRoomCode;
+      inviteCopyButton.textContent = 'Kopiuj link';
+      inviteElement.classList.add('on');
+    } else {
+      inviteElement.classList.remove('on');
+    }
+  };
+
+  window.copyLieroInvite = function (code) {
+    var c = code || currentRoomCode;
+    if (!c) { return false; }
+    var url = buildInviteUrl(c);
+    return copyTextToClipboard(url, function (ok) {
+      if (ok) { flashCopyLabel('Skopiowano!'); }
+    });
+  };
+
+  window.shareLieroInvite = function (code) {
+    var c = code || currentRoomCode;
+    if (!c) { return ''; }
+    var url = buildInviteUrl(c);
+    var text = 'Zagraj ze mną w Liero! Kod pokoju: ' + c;
+    copyTextToClipboard(url, function (ok) {
+      if (ok) { flashCopyLabel('Skopiowano!'); }
+    });
+    if (navigator.share) {
+      navigator.share({ title: 'Liero', text: text, url: url }).catch(function () {});
+      return 'share';
+    }
+    window.open('https://wa.me/?text=' + encodeURIComponent(text + '\n' + url), '_blank');
+    return 'whatsapp';
+  };
+
+  inviteShareButton.addEventListener('click', function (e) {
+    e.stopPropagation();
+    window.shareLieroInvite(currentRoomCode);
+  });
+  inviteCopyButton.addEventListener('click', function (e) {
+    e.stopPropagation();
+    window.copyLieroInvite(currentRoomCode);
+  });
 
   function showError(text) {
     if (!outputElement.classList.contains('on')) { outputElement.classList.add('on'); }
@@ -166,15 +294,22 @@
     window.visualViewport.addEventListener('resize', fit);
     window.visualViewport.addEventListener('scroll', fit);
   }
-  document.addEventListener('fullscreenchange', function () { lastKey = ''; fit(); });
+  document.addEventListener('fullscreenchange', function () {
+    if (!document.fullscreenElement) { fullscreenAsked = false; }
+    lastKey = '';
+    fit();
+  });
   window.setInterval(function () { lastKey = ''; fit(); }, 1000);
 
-  // --- Pełny ekran na pierwszy dotyk --------------------------------------
+  // --- Pełny ekran na dotyk -----------------------------------------------
   // Bez tego telefon zostawia pasek adresu i podpowiedzi systemowe, które zjadają
-  // kawałek ekranu w poziomie (a wtedy gra wygląda na obciętą).
+  // kawałek ekranu w poziomie (a wtedy gra wygląda na obciętą). Nie prosimy o
+  // pełny ekran, gdy czekamy na gracza w pokoju — wtedy dotyk ma otworzyć
+  // udostępnianie (navigator.share wymaga niezużytego gestu użytkownika).
   var fullscreenAsked = false;
-  function askFullscreen() {
-    if (fullscreenAsked) { return; }
+  function askFullscreen(e) {
+    if (fullscreenAsked || currentRoomCode) { return; }
+    if (e && e.target && e.target.closest && e.target.closest('#invite')) { return; }
     fullscreenAsked = true;
     var el = document.documentElement;
     try {
@@ -187,12 +322,12 @@
           if (screen.orientation && screen.orientation.lock) {
             screen.orientation.lock('landscape').catch(function () {});
           }
-        }).catch(function () {});
+        }).catch(function () { fullscreenAsked = false; });
       }
-    } catch (e) { /* np. iOS Safari: brak Fullscreen API na elemencie */ }
+    } catch (e2) { /* np. iOS Safari: brak Fullscreen API na elemencie */ }
   }
   ['touchend', 'pointerup', 'mouseup'].forEach(function (type) {
-    window.addEventListener(type, askFullscreen, { once: true, passive: true });
+    window.addEventListener(type, askFullscreen, { passive: true });
   });
 </script>
 {{{ SCRIPT }}}

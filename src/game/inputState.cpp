@@ -5,6 +5,7 @@
 #include "keys.hpp"
 #include "mixer/player.hpp"
 #include "text.hpp"
+#include "webPage.hpp"
 
 #include <SDL3/SDL.h>
 
@@ -29,6 +30,29 @@ void InputStringState::HandleEvent(SDL_Event& ev) {
 
   switch (ev.type) {
     case SDL_EVENT_KEY_DOWN:
+      if (ev.key.scancode == SDL_SCANCODE_V &&
+          (ev.key.mod & (SDL_KMOD_CTRL | SDL_KMOD_GUI)) != 0U) {
+        if (char* clip = SDL_GetClipboardText(); clip != nullptr) {
+          std::string pasted = clip;
+          SDL_free(clip);
+          if (maxLen_ == 6) {
+            std::string const kCode = web_page::ExtractRoomCode(pasted);
+            if (!kCode.empty()) {
+              pasted = kCode;
+              buffer_.clear();
+            }
+          }
+          for (char const kCh : pasted) {
+            char const kStr[2] = {kCh, '\0'};
+            int k = Utf8ToDos(kStr);
+            // NOLINTNEXTLINE(bugprone-assignment-in-if-condition)
+            if (k && buffer_.size() < maxLen_ && (!filter_ || (k = filter_(k)))) {
+              buffer_ += static_cast<char>(k);
+            }
+          }
+        }
+        break;
+      }
       switch (ev.key.scancode) {
         case SDL_SCANCODE_BACKSPACE:
           if (!buffer_.empty()) {
@@ -176,12 +200,18 @@ void InfoBoxState::Enter() {}
 void InfoBoxState::HandleEvent(SDL_Event& ev) {
   gfx->ProcessEvent(ev);
 
-  if (ev.type == SDL_EVENT_KEY_DOWN || ev.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+  if (ev.type == SDL_EVENT_KEY_DOWN || ev.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ||
+      ev.type == SDL_EVENT_FINGER_DOWN) {
     done_ = true;
   }
 }
 
 bool InfoBoxState::Update() {
+  if (gfx->TestSdlKeyOnce(SDL_SCANCODE_RETURN) || gfx->TestSdlKeyOnce(SDL_SCANCODE_ESCAPE) ||
+      gfx->TestControlOnce(WormSettingsExtensions::kFire) ||
+      gfx->TestControlOnce(WormSettingsExtensions::kJump)) {
+    done_ = true;
+  }
   if (done_) {
     gfx->ClearKeys();
     if (clearScreen_) {

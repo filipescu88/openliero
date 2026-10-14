@@ -16,6 +16,7 @@
 // 3. Once paired, hand the socket to a NetTransport and go to NetConnectState
 struct RelayConnectState : AppState {
   RelayConnectState(NetSession::Role role, std::string room_code = "");
+  ~RelayConnectState() override;
 
   void Enter() override;
   void HandleEvent(SDL_Event& ev) override;
@@ -31,6 +32,7 @@ struct RelayConnectState : AppState {
 
   std::string inviteLink_;  // empty on native builds — nothing to share
   bool shared_ = false;
+  bool copied_ = false;
 
   std::string statusLine1_;
   std::string statusLine2_;

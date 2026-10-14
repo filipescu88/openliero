@@ -25,6 +25,8 @@ std::string ShortLink(std::string const& link) {
 RelayConnectState::RelayConnectState(NetSession::Role role, std::string room_code)
     : role_(role), roomCode_(std::move(room_code)) {}
 
+RelayConnectState::~RelayConnectState() { web_page::SetWaitingRoom(""); }
+
 void RelayConnectState::Enter() {
   std::string const kUrl = DefaultRelayUrl();
   std::fprintf(stderr, "[relay] enter: role=%s room='%s' url=%s\n",
@@ -46,10 +48,17 @@ void RelayConnectState::HandleEvent(SDL_Event& ev) { gfx->ProcessEvent(ev); }
 
 bool RelayConnectState::Update() {
   if (cancel_) {
-    return !(gfx->TestSdlKeyOnce(SDL_SCANCODE_ESCAPE) || gfx->TestSdlKeyOnce(SDL_SCANCODE_RETURN));
+    return !(gfx->TestSdlKeyOnce(SDL_SCANCODE_ESCAPE) || gfx->TestSdlKeyOnce(SDL_SCANCODE_RETURN) ||
+             gfx->TestGamepadButtonOnce(SDL_GAMEPAD_BUTTON_SOUTH) ||
+             gfx->TestGamepadButtonOnce(SDL_GAMEPAD_BUTTON_EAST) ||
+             gfx->TestControlOnce(WormSettingsExtensions::kFire) ||
+             gfx->TestControlOnce(WormSettingsExtensions::kJump));
   }
 
-  if (gfx->TestSdlKeyOnce(SDL_SCANCODE_ESCAPE)) {
+  if (gfx->TestSdlKeyOnce(SDL_SCANCODE_ESCAPE) ||
+      gfx->TestGamepadButtonOnce(SDL_GAMEPAD_BUTTON_EAST) ||
+      gfx->TestControlOnce(WormSettingsExtensions::kJump)) {
+    web_page::SetWaitingRoom("");
     gfx->ClearKeys();
     return false;  // the socket closes with relay_, which tells the server
   }
@@ -63,6 +72,8 @@ bool RelayConnectState::Update() {
                      relay_.RoomCode().c_str());
         roomCode_ = relay_.RoomCode();
         inviteLink_ = web_page::InviteLink(roomCode_);
+        web_page::SetWaitingRoom(roomCode_);
+        copied_ = web_page::CopyInvite(roomCode_);
       }
       statusLine1_ = "ROOM CODE: " + roomCode_;
       // The room survives the page going to the background (to send the
@@ -70,11 +81,16 @@ bool RelayConnectState::Update() {
       statusLine2_ = relay_.Reconnecting() ? "RECONNECTING..." : "WAITING FOR PEER...";
       // A tap anywhere (the touch overlay sends it as ENTER + fire) or ENTER
       // shares the invite link — WhatsApp etc. through the phone's share sheet.
-      if (!inviteLink_.empty() && (gfx->TestSdlKeyOnce(SDL_SCANCODE_RETURN) ||
-                                   gfx->TestControlOnce(WormSettingsExtensions::kFire))) {
-        shared_ = web_page::ShareInvite(roomCode_);
-        std::fprintf(stderr, "[relay] share invite %s: %s\n", roomCode_.c_str(),
-                     shared_ ? "ok" : "unavailable");
+      if (gfx->TestSdlKeyOnce(SDL_SCANCODE_RETURN) ||
+          gfx->TestGamepadButtonOnce(SDL_GAMEPAD_BUTTON_SOUTH) ||
+          gfx->TestControlOnce(WormSettingsExtensions::kFire)) {
+        if (!inviteLink_.empty()) {
+          shared_ = web_page::ShareInvite(roomCode_);
+          std::fprintf(stderr, "[relay] share invite %s: %s\n", roomCode_.c_str(),
+                       shared_ ? "ok" : "unavailable");
+        } else if (!roomCode_.empty()) {
+          copied_ = web_page::CopyInvite(roomCode_);
+        }
       }
       break;
     case RelayClient::State::kPaired:
@@ -84,6 +100,7 @@ bool RelayConnectState::Update() {
       break;
     case RelayClient::State::kFailed:
       std::fprintf(stderr, "[relay] failed: %s\n", relay_.Error().c_str());
+      web_page::SetWaitingRoom("");
       statusLine2_ = relay_.Error();
       cancel_ = true;
       break;
@@ -94,6 +111,7 @@ bool RelayConnectState::Update() {
 }
 
 void RelayConnectState::TransitionToGame() {
+  web_page::SetWaitingRoom("");
   NetTransport transport;
   if (!transport.UseRelaySocket(relay_.ReleaseSocket())) {
     statusLine2_ = "RELAY SETUP FAILED";
@@ -133,9 +151,14 @@ void RelayConnectState::Draw() {
     if (kLinkW <= 310) {
       font.DrawString(gfx->play_renderer.bmp, kShown, kCx - kLinkW / 2, kCy + 54, 7);
     }
+  } else if (!roomCode_.empty() && relay_.GetState() == RelayClient::State::kWaitingForPeer) {
+    std::string const kHint =
+        copied_ ? "ROOM CODE COPIED - ENTER TO COPY AGAIN" : "PRESS ENTER TO COPY ROOM CODE";
+    int const kWh = font.GetDims(kHint);
+    font.DrawString(gfx->play_renderer.bmp, kHint, kCx - kWh / 2, kCy + 40, 45);
   }
 
-  std::string const kEsc = cancel_ ? "PRESS ESC TO RETURN" : "PRESS ESC TO CANCEL";
+  std::string const kEsc = cancel_ ? "PRESS ESC OR ENTER TO RETURN" : "PRESS ESC TO CANCEL";
   int const kWe = font.GetDims(kEsc);
   font.DrawString(gfx->play_renderer.bmp, kEsc, kCx - kWe / 2, 170, 7);
 }

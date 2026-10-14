@@ -277,6 +277,18 @@ TEST_CASE("Invite links accept only relay room codes", "[relay]") {
   CHECK_FALSE(web_page::IsRoomCode("AB12C"));    // too short
   CHECK_FALSE(web_page::IsRoomCode("AB12CDE"));  // too long
   CHECK_FALSE(web_page::IsRoomCode("AB'+1D"));   // pasted into page script: no quotes
+
+  CHECK(web_page::ExtractRoomCode("ab12cd") == "AB12CD");
+  CHECK(web_page::ExtractRoomCode("  ab1-2cd \n") == "AB12CD");
+  CHECK(web_page::ExtractRoomCode("https://liero.pl/?join=ab12cd#top") == "AB12CD");
+  CHECK(web_page::ExtractRoomCode("https://liero.pl/?relay=wss://x&join=zx98qp&x=1") == "ZX98QP");
+  CHECK(web_page::ExtractRoomCode("Liero (kod pokoju: k7m9p2): https://liero.pl/?join=k7m9p2") ==
+        "K7M9P2");
+  CHECK(web_page::ExtractRoomCode("Kod pokoju: qw34er") == "QW34ER");
+  CHECK(web_page::ExtractRoomCode("ROOM CODE: qw34er") == "QW34ER");
+  CHECK(web_page::ExtractRoomCode("https://liero.pl/index.html").empty());
+  CHECK(web_page::ExtractRoomCode("abc").empty());
+
   // Native builds have no page to read from or share to.
   CHECK(web_page::TakeJoinCodeFromUrl().empty());
   CHECK(web_page::InviteLink("AB12CD").empty());

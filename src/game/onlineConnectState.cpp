@@ -6,6 +6,7 @@
 #include "net/netutil.hpp"
 #include "netConnectState.hpp"
 #include "text.hpp"
+#include "webPage.hpp"
 
 #include <cstdio>
 #include <memory>
@@ -83,6 +84,7 @@ void OnlineConnectState::StartSignaling() {
     roomCode_ = code;
     statusLine1_ = "ROOM CODE: " + code;
     statusLine2_ = "WAITING FOR PEER...";
+    copied_ = web_page::CopyInvite(code);
 
     // Room created but peer hasn't joined yet — don't send ICE yet
   };
@@ -166,7 +168,11 @@ void OnlineConnectState::HandleEvent(SDL_Event& ev) { gfx->ProcessEvent(ev); }
 
 bool OnlineConnectState::Update() {
   if (cancel_) {
-    if (gfx->TestSdlKeyOnce(SDL_SCANCODE_ESCAPE) || gfx->TestSdlKeyOnce(SDL_SCANCODE_RETURN)) {
+    if (gfx->TestSdlKeyOnce(SDL_SCANCODE_ESCAPE) || gfx->TestSdlKeyOnce(SDL_SCANCODE_RETURN) ||
+        gfx->TestGamepadButtonOnce(SDL_GAMEPAD_BUTTON_SOUTH) ||
+        gfx->TestGamepadButtonOnce(SDL_GAMEPAD_BUTTON_EAST) ||
+        gfx->TestControlOnce(WormSettingsExtensions::kFire) ||
+        gfx->TestControlOnce(WormSettingsExtensions::kJump)) {
       if (iceAgent_) {
         iceAgent_->Stop();
       }
@@ -176,13 +182,23 @@ bool OnlineConnectState::Update() {
     return true;
   }
 
-  if (gfx->TestSdlKeyOnce(SDL_SCANCODE_ESCAPE)) {
+  if (gfx->TestSdlKeyOnce(SDL_SCANCODE_ESCAPE) ||
+      gfx->TestGamepadButtonOnce(SDL_GAMEPAD_BUTTON_EAST) ||
+      gfx->TestControlOnce(WormSettingsExtensions::kJump)) {
     if (iceAgent_) {
       iceAgent_->Stop();
     }
     signaling_.Disconnect();
     gfx->ClearKeys();
     return false;
+  }
+
+  if (role_ == NetSession::kHost && !roomCode_.empty() &&
+      signaling_.State() == SignalingClient::kHosting &&
+      (gfx->TestSdlKeyOnce(SDL_SCANCODE_RETURN) ||
+       gfx->TestGamepadButtonOnce(SDL_GAMEPAD_BUTTON_SOUTH) ||
+       gfx->TestControlOnce(WormSettingsExtensions::kFire))) {
+    copied_ = web_page::CopyInvite(roomCode_);
   }
 
   // Poll ICE agent (drains event queue, fires callbacks on main thread)
@@ -276,12 +292,13 @@ void OnlineConnectState::Draw() {
 
   if (role_ == NetSession::kHost && !roomCode_.empty() &&
       signaling_.State() == SignalingClient::kHosting) {
-    std::string const kCodeStr = "CODE: " + roomCode_;
-    int const kWc = font.GetDims(kCodeStr);
-    font.DrawString(gfx->play_renderer.bmp, kCodeStr, kCx - kWc / 2, kCy + 30, 45);
+    std::string const kHint =
+        copied_ ? "ROOM CODE COPIED - ENTER TO COPY AGAIN" : "PRESS ENTER TO COPY ROOM CODE";
+    int const kWc = font.GetDims(kHint);
+    font.DrawString(gfx->play_renderer.bmp, kHint, kCx - kWc / 2, kCy + 36, 45);
   }
 
-  std::string const kEsc = "PRESS ESC TO CANCEL";
+  std::string const kEsc = cancel_ ? "PRESS ESC OR ENTER TO RETURN" : "PRESS ESC TO CANCEL";
   int const kWe = font.GetDims(kEsc);
   font.DrawString(gfx->play_renderer.bmp, kEsc, kCx - kWe / 2, 170, 7);
 }

@@ -53,5 +53,6 @@ struct OnlineConnectState : AppState {
   std::string statusLine1_;
   std::string statusLine2_;
   bool cancel_ = false;
+  bool copied_ = false;
   uint64_t lastKeepaliveMs_ = 0;
 };

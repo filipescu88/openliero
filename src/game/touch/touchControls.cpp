@@ -177,11 +177,16 @@ void TouchControls::RecomputeLayout(Gfx& gfx) {
     buttons_[kBtnDig] = {.x = kRightX, .y = kRow2, .r = kSmallR};
     buttons_[kBtnMenu] = {.x = kCx, .y = kPad + (kSmallR * 0.9F), .r = kSmallR * 0.9F};
 
-    // Cały prawy pas od BRON w dół to strefa przycisków.
+    // Cały prawy pas od BRON w dół to strefa przycisków, a lewy pas wokół drążka
+    // to strefa chwytu drążka.
     zone_x0_ = kW - kBar;
     zone_x1_ = kW;
     zone_y0_ = kRow2 - (kSmallR * 1.4F);
     zone_y1_ = kH;
+    stick_x0_ = 0.0F;
+    stick_x1_ = kBar;
+    stick_y0_ = std::max(0.0F, stick_.base_y - (stick_r_ * 1.8F));
+    stick_y1_ = kH;
     return;
   }
 
@@ -223,6 +228,10 @@ void TouchControls::RecomputeLayout(Gfx& gfx) {
   zone_x1_ = kW;
   zone_y0_ = buttons_[kBtnDig].y - (buttons_[kBtnDig].r * 1.4F);
   zone_y1_ = kH;
+  stick_x0_ = 0.0F;
+  stick_x1_ = stick_.base_x + (stick_r_ * kStickZoneScale);
+  stick_y0_ = std::max(0.0F, stick_.base_y - (stick_r_ * kStickZoneScale));
+  stick_y1_ = kH;
 }
 
 void TouchControls::SimulateFinger(SDL_FingerID id, bool down, float nx, float ny, Gfx& gfx) {
@@ -274,10 +283,15 @@ void TouchControls::HandleEvent(SDL_Event const& ev, Gfx& gfx) {
       return;
     }
 
-    // 2) drążek — „chwyt” w promieniu strefy. Środek drążka jest STAŁY (środek
-    //    strefy z layoutu) — dotknięcie nie przesuwa drążka pod palec.
+    // 2) drążek — „chwyt” w promieniu strefy lub w lewym dolnym narożniku. Środek
+    //    drążka jest STAŁY (środek strefy z layoutu) — dotknięcie nie przesuwa
+    //    drążka pod palec.
     float const kStickR = stick_r_;
-    if (!stick_.active && InDisc(kX, kY, stick_.base_x, stick_.base_y, kStickR * kStickZoneScale)) {
+    bool const kInStickCorner =
+        (kX >= stick_x0_) && (kX <= stick_x1_) && (kY >= stick_y0_) && (kY <= stick_y1_);
+    if (!stick_.active &&
+        (InDisc(kX, kY, stick_.base_x, stick_.base_y, kStickR * kStickZoneScale) ||
+         kInStickCorner)) {
       stick_.active = true;
       stick_.finger = kId;
       stick_.x = kX;
@@ -327,7 +341,8 @@ void TouchControls::HandleEvent(SDL_Event const& ev, Gfx& gfx) {
     }
     return;
   }
-  for (Button& b : buttons_) {
+  for (int i = 0; i < kBtnCount; ++i) {
+    Button& b = buttons_[i];
     if (b.down && b.finger == kId) {
       if (kReleased) {
         b.finger = 0;
@@ -335,6 +350,24 @@ void TouchControls::HandleEvent(SDL_Event const& ev, Gfx& gfx) {
           b.down = false;
         } else {
           b.release_pending = true;  // gra jeszcze nie widziała wciśnięcia
+        }
+      } else if (i != kBtnMenu) {
+        // Przesunięcie prawego kciuka na inny przycisk akcji bez odrywania palca.
+        for (int target = 0; target < kBtnCount; ++target) {
+          if (target == i || target == kBtnMenu) {
+            continue;
+          }
+          Button const& tb = buttons_[target];
+          if (InDisc(kX, kY, tb.x, tb.y, tb.r * 1.15F)) {
+            b.finger = 0;
+            if (b.seen) {
+              b.down = false;
+            } else {
+              b.release_pending = true;
+            }
+            PressButton(gfx, target, kId);
+            break;
+          }
         }
       }
       return;
@@ -351,12 +384,35 @@ void TouchControls::HandleEvent(SDL_Event const& ev, Gfx& gfx) {
         tap_pending_ = false;
       }
     } else {
-      // Krótki dotyk bez ruchu poza strefami = potwierdzenie. Menu i ekran broni
-      // reagują na ENTER **oraz** na klawisz ognia gracza (TestControlOnce(kFire)) —
-      // dlatego pulsujemy oba, żeby dało się potwierdzać palcem w każdym ekranie.
+      // Krótki dotyk bez ruchu poza strefami = potwierdzenie. Menu, ekran wyboru
+      // broni i odrodzenie po śmierci reagują na ENTER oraz na klawisz ognia
+      // (TestControlOnce(kFire)). Podczas aktywnej walki żywym robakiem NIE
+      // pulsujemy ognia, żeby przypadkowe dotknięcie środka ekranu nie strzelało.
       if (ev.type == SDL_EVENT_FINGER_UP && tap_frames_ <= 30) {
         PulseKey(gfx, SDLToDOSKey(SDL_SCANCODE_RETURN), 2);
-        PulseKey(gfx, ActionKeyCode(gfx, WormSettings::kFire), 2);
+        bool live_worm_in_combat = false;
+        bool const kInMenu =
+            (gfx.state_stack.Top() != nullptr) && gfx.state_stack.Top()->WantsMenuFlip();
+        if (!kInMenu && gfx.controller != nullptr && !gfx.controller->InWeaponSelection()) {
+          if (Game* const kGame = gfx.controller->CurrentGame();
+              kGame != nullptr && !kGame->IsGameOver()) {
+            int const kProfile = gfx.net_session ? Settings::kNetworkPlayerIdx : 0;
+            WormSettings const* const kWs =
+                (gfx.settings != nullptr) ? gfx.settings->worm_settings[kProfile].get() : nullptr;
+            for (auto const& w : kGame->worms) {
+              if (w != nullptr && (kWs == nullptr || w->settings.get() == kWs ||
+                                   kGame->worms.size() == 1U || w.get() == kGame->worms[0].get())) {
+                if (w->visible) {
+                  live_worm_in_combat = true;
+                  break;
+                }
+              }
+            }
+          }
+        }
+        if (!live_worm_in_combat) {
+          PulseKey(gfx, ActionKeyCode(gfx, WormSettings::kFire), 2);
+        }
       }
       tap_pending_ = false;
     }
@@ -488,12 +544,10 @@ void TouchControls::Apply(Gfx& gfx, uint64_t now_ms) {
   //    ustawiony w PulseKey i NIE jest odtwarzany — tu tylko odliczamy czas trwania
   //    i zwalniamy (żeby nie zostawić klawisza wciśniętego ani w kontrolerze).
   uint32_t const kChangeCode = ActionKeyCode(gfx, WormSettings::kChange);
-  bool change_pulse_ended = false;
   for (uint32_t k = 0; k < kMaxDosKey; ++k) {
     if (pulse_frames_[k] > 0) {
       wanted_dos_[k] = true;
       if (--pulse_frames_[k] == 0) {
-        change_pulse_ended = change_pulse_ended || (k == kChangeCode);
         if (gfx.controller) {
           gfx.controller->OnKey(k, /*state=*/false);
         }
@@ -503,6 +557,8 @@ void TouchControls::Apply(Gfx& gfx, uint64_t now_ms) {
       }
     }
   }
+  bool const kRopePulseActive =
+      (kChangeCode > 0 && kChangeCode < kMaxDosKey && pulse_frames_[kChangeCode] > 0);
 
   // Krótkie tapnięcia: palec puścił, zanim gra zobaczyła przycisk — był wciśnięty
   // przez poprzednią klatkę, więc teraz można go puścić.
@@ -515,6 +571,7 @@ void TouchControls::Apply(Gfx& gfx, uint64_t now_ms) {
 
   // 2) drążek → 8 kierunków (ruch + celowanie)
   float const kStickR = stick_r_;
+  std::array<bool, kDirCount> const kPrevStickDirs = stick_dirs_;
   std::array<bool, kDirCount> dirs{};
   if (stick_.active) {
     dirs = StickDirs(ClampUnit((stick_.x - stick_.base_x) / kStickR),
@@ -522,12 +579,92 @@ void TouchControls::Apply(Gfx& gfx, uint64_t now_ms) {
   }
   stick_dirs_ = dirs;
 
+  // Obsługa BRON (kBtnChange):
+  // - w pierwszej klatce BRON Worm::ProcessWeaponChange robi Release(kLeft/kRight);
+  //   zdejmujemy też kierunek trzymany jeszcze sprzed wciśnięcia BRON (chodzenie),
+  //   żeby biegnięcie + tapnięcie BRON nie było mylone z ręcznym kręceniem bronią;
+  // - jeśli gracz puści BRON bez wychylenia drążka (pojedynczy tap), wykonujemy
+  //   2-klatkowy cykl: (krok 2) kChange=true + kRight=true (zmiana broni o 1 w przód),
+  //   (krok 1) kChange=false + kLeft/kRight=false (daje czyste zbocze 0->1 w kolejnej
+  //   klatce, wymagane także przez RollbackController w grze online).
+  bool const kChangeBtnDown = buttons_[kBtnChange].down;
+  if (kChangeBtnDown && !change_down_prev_) {
+    change_used_stick_ = false;
+    change_walk_left_ = kPrevStickDirs[kDirLeft];
+    change_walk_right_ = kPrevStickDirs[kDirRight];
+    change_tap_step_ = 0;
+  }
+  if (kChangeBtnDown) {
+    if (!dirs[kDirLeft]) {
+      change_walk_left_ = false;
+    }
+    if (!dirs[kDirRight]) {
+      change_walk_right_ = false;
+    }
+    if (!change_down_prev_) {
+      dirs[kDirLeft] = false;
+      dirs[kDirRight] = false;
+    } else {
+      if (change_walk_left_) {
+        dirs[kDirLeft] = false;
+      }
+      if (change_walk_right_) {
+        dirs[kDirRight] = false;
+      }
+      if (dirs[kDirLeft] || dirs[kDirRight] || dirs[kDirUp] || dirs[kDirDown]) {
+        change_used_stick_ = true;
+      }
+    }
+  } else if (change_down_prev_) {
+    change_tap_step_ = change_used_stick_ ? 1 : 2;
+  }
+  change_down_prev_ = kChangeBtnDown;
+
+  // Trzymanie LINA po impulsie rzutu + wychylenie drążka w górę/dół bez lewo/prawo
+  // przytrzymuje kChange, pozwalając skracać i wydłużać linę (Worm::ProcessTasks).
+  bool const kRopeAdjust = buttons_[kBtnRope].down && !kRopePulseActive &&
+                           (dirs[kDirUp] || dirs[kDirDown]) && !dirs[kDirLeft] && !dirs[kDirRight];
+  if (rope_adjusting_prev_ && !kRopeAdjust && change_tap_step_ == 0) {
+    change_tap_step_ = 1;
+  }
+  rope_adjusting_prev_ = kRopeAdjust;
+
+  bool want_change = kChangeBtnDown || kRopeAdjust;
+  if (change_tap_step_ == 2) {
+    want_change = true;
+    dirs[kDirLeft] = false;
+    dirs[kDirRight] = true;
+    --change_tap_step_;
+  } else if (change_tap_step_ == 1) {
+    want_change = false;
+    dirs[kDirLeft] = false;
+    dirs[kDirRight] = false;
+    --change_tap_step_;
+  }
+
+  // Podczas 3-klatkowego impulsu rzutu liny wyciszamy lewo/prawo: dzięki temu rzut
+  // liny w biegu nie zmienia przypadkiem broni, a po zakończeniu impulsu kierunek
+  // dostaje prawdziwe zbocze narastające (0 -> 1) w LocalController i RollbackController.
+  if (kRopePulseActive) {
+    dirs[kDirLeft] = false;
+    dirs[kDirRight] = false;
+  }
+
   // KOP: klawisz kopania gracza; gdy go nie ma (stare profile mają 0), kopanie
   // to po prostu lewo+prawo naraz — tak samo kopie się na klawiaturze.
+  // Worm::ProcessMovement wymaga puszczenia lewo+prawo (able_to_dig) przed kolejnym
+  // wykopem, więc przy trzymanym KOP zwalniamy go na 1 klatkę co 5 klatek.
   bool const kDigKeyBound = ActionKeyCode(gfx, WormSettings::kDig) != 0;
+  bool dig_active = false;
+  if (buttons_[kBtnDig].down) {
+    dig_active = (dig_hold_frames_ < 4) || ((dig_hold_frames_ % 5) != 4);
+    ++dig_hold_frames_;
+  } else {
+    dig_hold_frames_ = 0;
+  }
   if (buttons_[kBtnDig].down && !kDigKeyBound) {
-    dirs[kDirLeft] = true;
-    dirs[kDirRight] = true;
+    dirs[kDirLeft] = dig_active;
+    dirs[kDirRight] = dig_active;
   }
 
   constexpr std::array<int, kDirCount> kDirControls = {WormSettings::kLeft, WormSettings::kRight,
@@ -537,22 +674,10 @@ void TouchControls::Apply(Gfx& gfx, uint64_t now_ms) {
   }
   SetActionKey(gfx, WormSettings::kFire, buttons_[kBtnFire].down);
   SetActionKey(gfx, WormSettings::kJump, buttons_[kBtnJump].down);
-  SetActionKey(gfx, WormSettings::kDig, buttons_[kBtnDig].down && kDigKeyBound);
-  SetActionKey(gfx, WormSettings::kChange, buttons_[kBtnChange].down);
+  SetActionKey(gfx, WormSettings::kDig, dig_active && kDigKeyBound);
+  SetActionKey(gfx, WormSettings::kChange, want_change);
 
-  // Po rzucie liny: trzymana BRON zdjęła robakowi lewo/prawo (ProcessWeaponChange
-  // robi Release), a palec dalej trzyma drążek. Przypominamy kontrolerowi o
-  // trzymanych kierunkach, żeby po rzucie dało się od razu bujać/chodzić.
-  if (change_pulse_ended && !buttons_[kBtnChange].down && gfx.controller) {
-    for (std::size_t d = kDirLeft; d <= kDirRight; ++d) {
-      uint32_t const kCode = ActionKeyCode(gfx, kDirControls.at(d));
-      if (dirs.at(d) && kCode != 0 && KeyHeldByTouch(kCode)) {
-        gfx.controller->OnKey(static_cast<int>(kCode), /*state=*/true);
-      }
-    }
-  }
-
-  // Gra zobaczyła w tej klatce wszystko, co jest wciśnięte.
+  // Gra zobaczyła w tej klatce wszystko, co jest wciśnięty.
   for (Button& b : buttons_) {
     b.seen = b.down;
   }

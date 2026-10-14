@@ -111,6 +111,12 @@ struct TouchControls {
   float zone_y0_ = 0.0F;
   float zone_x1_ = 0.0F;
   float zone_y1_ = 0.0F;
+  // Strefa lewego drążka (lewy dolny róg / lewy pas): dotyk nieco poza samym
+  // krążkiem drążka nadal chwyta drążek zamiast wywoływać przypadkowy „tap”.
+  float stick_x0_ = 0.0F;
+  float stick_y0_ = 0.0F;
+  float stick_x1_ = 0.0F;
+  float stick_y1_ = 0.0F;
 
   // Które klawisze DOS wcisnęła nakładka (żeby nie zwalniać klawiszy klawiatury).
   // To JEDYNE źródło prawdy o stanie dotyku: gra czyści `gfx.dos_keys` co klatkę
@@ -131,6 +137,17 @@ struct TouchControls {
   // Autopowtarzanie trzymanego kierunku (jak klawiatura): kiedy (ms) wcisnąć
   // klawisz w `gfx` ponownie; 0 = kierunek nietrzymany. Indeks: lewo, prawo, góra, dół.
   std::array<uint64_t, 4> repeat_at_ms_{};
+
+  // Obsługa przycisku BRON (pojedyncze tapnięcie = następna broń, trzymanie + drążek =
+  // ręczny wybór broni/długości liny, a po puszczeniu odświeżenie zbocza 0->1 dla ruchu)
+  // oraz ciągłego kopania (KOP) i regulacji liny (LINA + góra/dół).
+  bool change_down_prev_ = false;
+  bool change_used_stick_ = false;
+  bool change_walk_left_ = false;
+  bool change_walk_right_ = false;
+  int change_tap_step_ = 0;
+  bool rope_adjusting_prev_ = false;
+  int dig_hold_frames_ = 0;
 
   // Potencjalne tapnięcie poza strefami (potwierdzenie w menu).
   bool tap_pending_ = false;

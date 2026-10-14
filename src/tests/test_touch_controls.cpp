@@ -314,3 +314,112 @@ TEST_CASE("On a wide screen the controls sit on the side bars, off the game") {
     CHECK_FALSE(gfx.TestControl(kControl));
   }
 }
+
+TEST_CASE("Single tap on BRON cycles weapon and preserves walking, LINA climbs rope") {
+  TouchFixture f;
+  PrecomputeTables();
+  auto common = std::make_shared<Common>();
+  common->load(FsNode("data") / "TC" / "openliero");
+  gfx.settings->record_replays = false;
+  gfx.settings->random_level = true;
+  gfx.settings->loading_time = 0;
+
+  auto lc = std::make_unique<LocalController>(common, gfx.settings);
+  auto* ctrl = lc.get();
+  Level level(*common);
+  level.GenerateFromSettings(*common, *gfx.settings, ctrl->game.rand);
+  ctrl->SwapLevel(level);
+  ctrl->ChangeState(kStateWeaponSelection);
+  ctrl->ChangeState(kStateGame);
+  gfx.controller = std::move(lc);
+
+  Worm const& worm = *ctrl->game.worms[0];
+  for (int i = 0; i < 3000 && !worm.visible; ++i) {
+    ctrl->Process();
+  }
+  REQUIRE(worm.visible);
+
+  auto const kFrame = [&] {
+    f.touch.Apply(gfx, f.now_ms);
+    f.now_ms += 16;
+    ctrl->Process();
+  };
+
+  // Hold stick right to walk, then tap BRON (578, 220): weapon advances by 1 and
+  // worm resumes walking right without lifting the left thumb.
+  constexpr float kChangeX = 578.0F;
+  constexpr float kChangeY = 220.0F;
+  f.Stick(0.8F, 0.0F);
+  kFrame();
+  CHECK(worm.Pressed(Worm::kRight));
+  int const kInitialWeapon = worm.current_weapon;
+
+  Touch(f.touch, /*down=*/true, kChangeX, kChangeY);
+  kFrame();
+  Touch(f.touch, /*down=*/false, kChangeX, kChangeY);
+  for (int i = 0; i < 4; ++i) {
+    kFrame();
+  }
+  CHECK(worm.current_weapon == (kInitialWeapon + 1) % Settings::kSelectableWeapons);
+  CHECK(worm.Pressed(Worm::kRight));
+
+  // Throw rope with LINA while holding stick up after throw: shortens rope length
+  // without changing weapon.
+  int const kWeaponBeforeRope = worm.current_weapon;
+  f.Stick(0.0F, -0.8F);
+  Touch(f.touch, /*down=*/true, kRopeX, kRopeY);
+  for (int i = 0; i < 4; ++i) {
+    kFrame();
+  }
+  REQUIRE(worm.ninjarope.out);
+  fixed const kLenAfterThrow = worm.ninjarope.length;
+  for (int i = 0; i < 4; ++i) {
+    kFrame();
+  }
+  CHECK(worm.ninjarope.length < kLenAfterThrow);
+  CHECK(worm.current_weapon == kWeaponBeforeRope);
+  Touch(f.touch, /*down=*/false, kRopeX, kRopeY);
+  f.Release();
+
+  // Tapping the middle of the arena while the worm is alive does not fire.
+  f.touch.SimulateFinger(11, /*down=*/true, 0.5F, 0.5F, gfx);
+  f.touch.SimulateFinger(11, /*down=*/false, 0.5F, 0.5F, gfx);
+  kFrame();
+  CHECK_FALSE(worm.Pressed(Worm::kFire));
+
+  gfx.controller.reset();
+}
+
+TEST_CASE("Holding KOP pulses digging and sliding thumb switches action buttons") {
+  TouchFixture f;
+  Touch(f.touch, /*down=*/true, kDigX, kDigY);
+  int released_frames = 0;
+  int active_frames = 0;
+  for (int i = 0; i < 10; ++i) {
+    f.touch.Apply(gfx, f.now_ms);
+    f.now_ms += 16;
+    if (gfx.TestControl(WormSettings::kLeft) && gfx.TestControl(WormSettings::kRight)) {
+      ++active_frames;
+    } else {
+      ++released_frames;
+    }
+  }
+  CHECK(active_frames >= 1);
+  CHECK(released_frames >= 1);
+  Touch(f.touch, /*down=*/false, kDigX, kDigY);
+  f.touch.Apply(gfx, f.now_ms);
+
+  // Slide from SKOK (460, 338) to OGIEN (578, 338) without lifting the thumb.
+  Touch(f.touch, /*down=*/true, kJumpX, kJumpY);
+  f.touch.Apply(gfx, f.now_ms);
+  CHECK(gfx.TestControl(WormSettings::kJump));
+  SDL_Event ev{};
+  ev.type = SDL_EVENT_FINGER_MOTION;
+  ev.tfinger.fingerID = kThumb;
+  ev.tfinger.x = 578.0F / kW;
+  ev.tfinger.y = 338.0F / kH;
+  f.touch.HandleEvent(ev, gfx);
+  f.touch.Apply(gfx, f.now_ms + 16);
+  CHECK(gfx.TestControl(WormSettings::kFire));
+  Touch(f.touch, /*down=*/false, 578.0F, 338.0F);
+}
