@@ -61,6 +61,26 @@ RollbackController::RollbackController(const std::shared_ptr<Common>& common,
   }
   ConfigureGameSlots(game, ws);
   game.AddSpectatorViewport(new SpectatorViewport(Rect(0, 0, 640, 400)));
+#if OPENLIERO_EMSCRIPTEN
+  // On a phone each split-screen half is tiny, and you only steer one worm.
+  UseSingleView();
+#endif
+}
+
+void RollbackController::UseSingleView() {
+  // Viewports are render-only (the simulation writes their shake/banner but
+  // never reads them, and checksums skip them), so each peer can show its own
+  // layout without affecting the match. The shadow game keeps the split one.
+  for (Viewport* vp : game.viewports) {
+    if (vp->worm_idx == localIdx_) {
+      // The whole width above the status bar.
+      *vp = Viewport(Rect(0, 0, 320, 158), localIdx_);
+    } else {
+      // No area: nothing of the world is drawn, but its status bar (health,
+      // ammo, kills, lives) and its "killed by" banner still are.
+      *vp = Viewport(Rect(0, 0, 0, 0), remoteIdx_);
+    }
+  }
 }
 
 RollbackController::~RollbackController() = default;
